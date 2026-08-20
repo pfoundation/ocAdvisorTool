@@ -1,0 +1,11 @@
+{
+  "name": "oc-advisor",
+  "version": "1.0.0",
+  "description": "OpenCode plugin: consult Claude Fable 5 as senior advisor with full session context from SQLite",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.18"
+  }
+}
