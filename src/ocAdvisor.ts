@@ -1,24 +1,25 @@
-import type { Plugin } from '@opencode-ai/plugin';
-import { tool } from '@opencode-ai/plugin/tool';
-import { Database } from 'bun:sqlite';
-import { readFile } from 'fs/promises';
-import { homedir } from 'os';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import type { Plugin } from "@opencode-ai/plugin";
+import { tool } from "@opencode-ai/plugin/tool";
+import { Database } from "bun:sqlite";
+import { readFile } from "fs/promises";
+import { homedir } from "os";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 
-const DB_PATH = join(homedir(), '.local/share/opencode/opencode.db');
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
-const ADVISOR_MODEL = 'claude-fable-5';
-const MAX_TOKENS = 4096;
-const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const DB_PATH = join(homedir(), ".local/share/opencode/opencode.db");
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const ADVISOR_MODEL = "claude-fable-5";
+const MAX_TOKENS = 64000;
+const ADVISOR_EFFORT = "max";
+const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FABLE_DISABLED =
-  'ocAdvisor is disabled for anthropic/claude-fable-* sessions — the current model is already Fable.';
+  "ocAdvisor is disabled for anthropic/claude-fable-* sessions — the current model is already Fable.";
 
 const ENV_SEARCH_PATHS = [
-  join(PROJECT_ROOT, '.env'),
-  join(homedir(), '.config/opencode/tool/.env'),
-  join(homedir(), '.config/opencode/.env'),
-  join(homedir(), '.env'),
+  join(PROJECT_ROOT, ".env"),
+  join(homedir(), ".config/opencode/tool/.env"),
+  join(homedir(), ".config/opencode/.env"),
+  join(homedir(), ".env"),
 ];
 
 const SYSTEM_BASE = `You are a senior advisor reviewing a coding agent's work. You have the full session transcript.
@@ -35,7 +36,7 @@ You are a software architect. Evaluate the current approach and plan. Identify r
 You are a debugger. Analyze error patterns, stack traces, and failed attempts in the transcript. Identify root causes, explain why previous fixes didn't work, and propose targeted solutions.`,
 };
 
-const TOOL_DESCRIPTION = `Consult an advanced model as a senior advisor. Reads the full session transcript directly from the OpenCode database — including parent sessions for subagents — and sends it to Fable 5 for high-quality analysis.
+const TOOL_DESCRIPTION = `Consult an advanced model as a senior advisor. Reads the full session transcript directly from the OpenCode database — including parent sessions for subagents — and sends it to the model for high-quality analysis.
 
 Use this when you need a second opinion on your approach, want a thorough code review, need help debugging a persistent issue, or want architectural guidance before committing to a plan.
 
@@ -43,16 +44,16 @@ Modes: "general" (default), "review" (code review), "plan" (architecture), "debu
 `;
 
 const OCADVISOR_INPUT_SCHEMA = {
-  type: 'object',
+  type: "object",
   properties: {
     mode: {
-      type: 'string',
-      enum: ['general', 'review', 'plan', 'debug'],
-      description: 'Advisory mode: general, review, plan, or debug',
+      type: "string",
+      enum: ["general", "review", "plan", "debug"],
+      description: "Advisory mode: general, review, plan, or debug",
     },
     question: {
-      type: 'string',
-      description: 'Optional specific question to focus the advisor on',
+      type: "string",
+      description: "Optional specific question to focus the advisor on",
     },
   },
 };
@@ -90,11 +91,11 @@ interface SessionModel {
 async function loadEnvKey(varName: string): Promise<string | null> {
   for (const envPath of ENV_SEARCH_PATHS) {
     try {
-      const content = await readFile(envPath, 'utf-8');
-      for (const line of content.split('\n')) {
+      const content = await readFile(envPath, "utf-8");
+      for (const line of content.split("\n")) {
         const trimmed = line.trim();
-        if (trimmed.startsWith('#') || !trimmed.includes('=')) continue;
-        const eqIdx = trimmed.indexOf('=');
+        if (trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+        const eqIdx = trimmed.indexOf("=");
         const key = trimmed.slice(0, eqIdx).trim();
         if (key !== varName) continue;
         let value = trimmed.slice(eqIdx + 1).trim();
@@ -116,10 +117,10 @@ async function loadEnvKey(varName: string): Promise<string | null> {
 async function getApiKey(): Promise<string> {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
 
-  const envKey = await loadEnvKey('ANTHROPIC_API_KEY');
+  const envKey = await loadEnvKey("ANTHROPIC_API_KEY");
   if (envKey) return envKey;
 
-  return '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';
+  return "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";
 }
 
 function openDb(): InstanceType<typeof Database> {
@@ -139,7 +140,7 @@ function parseModelJson(raw: string | null | undefined): SessionModel | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object') return parsed as SessionModel;
+    if (parsed && typeof parsed === "object") return parsed as SessionModel;
   } catch {}
   return null;
 }
@@ -148,22 +149,22 @@ function getSessionModel(
   db: InstanceType<typeof Database>,
   sessionId: string,
 ): SessionModel | null {
-  if (tableExists(db, 'session_v2')) {
+  if (tableExists(db, "session_v2")) {
     const row = db
       .query<
         { model: string | null },
         [string]
-      >('SELECT model FROM session_v2 WHERE id = ?')
+      >("SELECT model FROM session_v2 WHERE id = ?")
       .get(sessionId);
     const model = parseModelJson(row?.model);
     if (model) return model;
   }
-  if (tableExists(db, 'session')) {
+  if (tableExists(db, "session")) {
     const row = db
       .query<
         { model: string | null },
         [string]
-      >('SELECT model FROM session WHERE id = ?')
+      >("SELECT model FROM session WHERE id = ?")
       .get(sessionId);
     return parseModelJson(row?.model);
   }
@@ -183,10 +184,10 @@ function isFableModel(
 ): boolean {
   if (!model) return false;
   const provider = String(
-    model.providerID || model.provider || '',
+    model.providerID || model.provider || "",
   ).toLowerCase();
-  const id = String(model.id || model.modelID || '').toLowerCase();
-  return provider.includes('anthropic') && id.includes('fable');
+  const id = String(model.id || model.modelID || "").toLowerCase();
+  return provider.includes("anthropic") && id.includes("fable");
 }
 
 function isFableSession(
@@ -204,7 +205,7 @@ function getSession(
     .query<
       SessionRow,
       [string]
-    >('SELECT id, parent_id, title, directory FROM session WHERE id = ?')
+    >("SELECT id, parent_id, title, directory FROM session WHERE id = ?")
     .get(sessionId);
 }
 
@@ -216,7 +217,7 @@ function getSessionV2(
     .query<
       SessionRow,
       [string]
-    >('SELECT id, parent_id, title, directory FROM session_v2 WHERE id = ?')
+    >("SELECT id, parent_id, title, directory FROM session_v2 WHERE id = ?")
     .get(sessionId);
 }
 
@@ -228,7 +229,7 @@ function getMessages(
     .query<
       MessageRow,
       [string]
-    >('SELECT id, data, time_created FROM message WHERE session_id = ? ORDER BY time_created ASC')
+    >("SELECT id, data, time_created FROM message WHERE session_id = ? ORDER BY time_created ASC")
     .all(sessionId);
 }
 
@@ -240,7 +241,7 @@ function getParts(
     .query<
       PartRow,
       [string]
-    >('SELECT data, time_created FROM part WHERE message_id = ? ORDER BY time_created ASC')
+    >("SELECT data, time_created FROM part WHERE message_id = ? ORDER BY time_created ASC")
     .all(messageId);
 }
 
@@ -252,25 +253,25 @@ function getSessionMessages(
     .query<
       SessionMessageRow,
       [string]
-    >('SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq ASC')
+    >("SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq ASC")
     .all(sessionId);
 }
 
 function truncate(value: string, max: number): string {
-  return value.length > max ? value.slice(0, max) + '\n... (truncated)' : value;
+  return value.length > max ? value.slice(0, max) + "\n... (truncated)" : value;
 }
 
 function stringifyUnknown(value: unknown): string {
-  return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
 function formatPartContent(part: Record<string, any>): string | null {
   switch (part.type) {
-    case 'text':
+    case "text":
       return part.text || null;
-    case 'tool': {
-      const name = part.tool || part.name || 'unknown';
-      const status = part.state?.status || 'unknown';
+    case "tool": {
+      const name = part.tool || part.name || "unknown";
+      const status = part.state?.status || "unknown";
       const lines: string[] = [`[Tool: ${name}] (${status})`];
       if (part.state?.input) {
         lines.push(
@@ -282,10 +283,10 @@ function formatPartContent(part: Record<string, any>): string | null {
         lines.push(`Output: ${truncate(stringifyUnknown(output), 3000)}`);
       }
       if (part.state?.error) lines.push(`Error: ${part.state.error}`);
-      return lines.join('\n');
+      return lines.join("\n");
     }
-    case 'compaction':
-      return `[Context compaction occurred${part.auto ? ' (auto)' : ' (manual)'}]`;
+    case "compaction":
+      return `[Context compaction occurred${part.auto ? " (auto)" : " (manual)"}]`;
     default:
       return null;
   }
@@ -293,18 +294,18 @@ function formatPartContent(part: Record<string, any>): string | null {
 
 function formatV2Content(block: Record<string, any>): string | null {
   switch (block.type) {
-    case 'text':
+    case "text":
       return block.text || null;
-    case 'reasoning':
+    case "reasoning":
       return null;
-    case 'tool':
+    case "tool":
       return formatPartContent({
-        type: 'tool',
+        type: "tool",
         tool: block.name || block.tool,
         state: block.state,
       });
     default:
-      return typeof block.text === 'string' && block.text ? block.text : null;
+      return typeof block.text === "string" && block.text ? block.text : null;
   }
 }
 
@@ -312,35 +313,35 @@ function formatV2Message(
   type: string,
   data: Record<string, any>,
 ): string | null {
-  if (type === 'user') {
-    const text = typeof data.text === 'string' ? data.text : '';
+  if (type === "user") {
+    const text = typeof data.text === "string" ? data.text : "";
     return text ? `## User\n${text}` : null;
   }
-  if (type === 'assistant') {
-    const agent = data.agent ? ` (agent: ${data.agent})` : '';
+  if (type === "assistant") {
+    const agent = data.agent ? ` (agent: ${data.agent})` : "";
     const modelId = data.model?.id || data.model?.modelID;
-    const model = modelId ? ` [${modelId}]` : '';
+    const model = modelId ? ` [${modelId}]` : "";
     const parts: string[] = [];
     for (const block of data.content || []) {
-      if (!block || typeof block !== 'object') continue;
+      if (!block || typeof block !== "object") continue;
       const content = formatV2Content(block);
       if (content) parts.push(content);
     }
     if (parts.length === 0) return null;
-    return `## Assistant${agent}${model}\n${parts.join('\n\n')}`;
+    return `## Assistant${agent}${model}\n${parts.join("\n\n")}`;
   }
-  if (type === 'compaction') {
-    const auto = data.reason === 'auto' || data.auto;
+  if (type === "compaction") {
+    const auto = data.reason === "auto" || data.auto;
     const summary =
-      typeof data.summary === 'string' && data.summary
+      typeof data.summary === "string" && data.summary
         ? `\n${truncate(data.summary, 2000)}`
-        : '';
-    return `[Context compaction occurred${auto ? ' (auto)' : ' (manual)'}]${summary}`;
+        : "";
+    return `[Context compaction occurred${auto ? " (auto)" : " (manual)"}]${summary}`;
   }
-  if (type === 'synthetic' && typeof data.text === 'string' && data.text) {
+  if (type === "synthetic" && typeof data.text === "string" && data.text) {
     return `## Synthetic\n${truncate(data.text, 3000)}`;
   }
-  if (type === 'system' && typeof data.text === 'string' && data.text) {
+  if (type === "system" && typeof data.text === "string" && data.text) {
     return `## System\n${truncate(data.text, 2000)}`;
   }
   return null;
@@ -351,11 +352,11 @@ function buildTranscriptV1(
   sessionId: string,
   visited = new Set<string>(),
 ): string {
-  if (visited.has(sessionId)) return '';
+  if (visited.has(sessionId)) return "";
   visited.add(sessionId);
 
   const session = getSession(db, sessionId);
-  if (!session) return '';
+  if (!session) return "";
 
   const sections: string[] = [];
 
@@ -379,9 +380,9 @@ function buildTranscriptV1(
       continue;
     }
 
-    const role = msgData.role === 'assistant' ? 'Assistant' : 'User';
-    const agent = msgData.agent ? ` (agent: ${msgData.agent})` : '';
-    const model = msgData.model?.modelID ? ` [${msgData.model.modelID}]` : '';
+    const role = msgData.role === "assistant" ? "Assistant" : "User";
+    const agent = msgData.agent ? ` (agent: ${msgData.agent})` : "";
+    const model = msgData.model?.modelID ? ` [${msgData.model.modelID}]` : "";
 
     const parts = getParts(db, msg.id);
     const partTexts: string[] = [];
@@ -397,11 +398,11 @@ function buildTranscriptV1(
     }
 
     if (partTexts.length > 0) {
-      sections.push(`## ${role}${agent}${model}\n${partTexts.join('\n\n')}`);
+      sections.push(`## ${role}${agent}${model}\n${partTexts.join("\n\n")}`);
     }
   }
 
-  return sections.join('\n\n');
+  return sections.join("\n\n");
 }
 
 function buildTranscriptV2(
@@ -409,11 +410,11 @@ function buildTranscriptV2(
   sessionId: string,
   visited = new Set<string>(),
 ): string {
-  if (visited.has(sessionId)) return '';
+  if (visited.has(sessionId)) return "";
   visited.add(sessionId);
 
   const session = getSessionV2(db, sessionId);
-  if (!session) return '';
+  if (!session) return "";
 
   const sections: string[] = [];
 
@@ -439,16 +440,16 @@ function buildTranscriptV2(
     if (formatted) sections.push(formatted);
   }
 
-  return sections.join('\n\n');
+  return sections.join("\n\n");
 }
 
 function buildTranscript(
   db: InstanceType<typeof Database>,
   sessionId: string,
 ): string {
-  if (tableExists(db, 'session_message')) {
+  if (tableExists(db, "session_message")) {
     const row = db
-      .query('SELECT 1 AS ok FROM session_message WHERE session_id = ? LIMIT 1')
+      .query("SELECT 1 AS ok FROM session_message WHERE session_id = ? LIMIT 1")
       .get(sessionId) as { ok?: number } | null;
     if (row) return buildTranscriptV2(db, sessionId);
   }
@@ -468,17 +469,18 @@ async function callAdvisor(
     : `Here is the full session transcript:\n\n${transcript}\n\n---\n\nPlease analyze the above session and provide your advisory guidance.`;
 
   const response = await fetch(ANTHROPIC_API_URL, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
       model: ADVISOR_MODEL,
       max_tokens: MAX_TOKENS,
+      output_config: { effort: ADVISOR_EFFORT },
       system: systemPrompt,
-      messages: [{ role: 'user', content: userContent }],
+      messages: [{ role: "user", content: userContent }],
     }),
     signal,
   });
@@ -493,15 +495,15 @@ async function callAdvisor(
     usage?: { input_tokens?: number; output_tokens?: number };
   };
   const text = result.content
-    ?.filter((b) => b.type === 'text')
+    ?.filter((b) => b.type === "text")
     .map((b) => b.text)
-    .join('\n');
+    .join("\n");
   const usage = result.usage;
   const usageStr = usage
-    ? `\n\n---\n_ocAdvisor: ${usage.input_tokens?.toLocaleString()} input + ${usage.output_tokens?.toLocaleString()} output tokens (${ADVISOR_MODEL})_`
-    : '';
+    ? `\n\n---\n_ocAdvisor: ${usage.input_tokens?.toLocaleString()} input + ${usage.output_tokens?.toLocaleString()} output tokens (${ADVISOR_MODEL}, effort=${ADVISOR_EFFORT})_`
+    : "";
 
-  return (text || '(No response from advisor)') + usageStr;
+  return (text || "(No response from advisor)") + usageStr;
 }
 
 async function runAdvisor(opts: {
@@ -512,7 +514,7 @@ async function runAdvisor(opts: {
 }): Promise<string> {
   const sessionId = opts.sessionId;
   if (!sessionId) {
-    return 'Error: No session ID available. ocAdvisor requires a valid OpenCode session context.';
+    return "Error: No session ID available. ocAdvisor requires a valid OpenCode session context.";
   }
 
   let db: InstanceType<typeof Database> | null = null;
@@ -526,7 +528,7 @@ async function runAdvisor(opts: {
     }
 
     const systemPrompt =
-      SYSTEM_PROMPTS[opts.mode || 'general'] || SYSTEM_PROMPTS.general;
+      SYSTEM_PROMPTS[opts.mode || "general"] || SYSTEM_PROMPTS.general;
     return await callAdvisor(
       systemPrompt,
       transcript,
@@ -547,13 +549,13 @@ export const OcAdvisorPlugin: Plugin = async () => {
         description: TOOL_DESCRIPTION,
         args: {
           mode: tool.schema
-            .enum(['general', 'review', 'plan', 'debug'])
-            .default('general')
-            .describe('Advisory mode: general, review, plan, or debug'),
+            .enum(["general", "review", "plan", "debug"])
+            .default("general")
+            .describe("Advisory mode: general, review, plan, or debug"),
           question: tool.schema
             .string()
             .optional()
-            .describe('Optional specific question to focus the advisor on'),
+            .describe("Optional specific question to focus the advisor on"),
         },
         async execute(args, context) {
           return runAdvisor({
@@ -574,11 +576,11 @@ export async function setupOcAdvisorV2(ctx: {
 }): Promise<(() => void) | void> {
   const registrations: Array<{ dispose?: () => Promise<void> | void }> = [];
 
-  if (typeof ctx.tool?.transform === 'function') {
+  if (typeof ctx.tool?.transform === "function") {
     const reg = await ctx.tool.transform(
       (draft: { add: (tool: unknown) => void }) => {
         draft.add({
-          name: 'ocAdvisor',
+          name: "ocAdvisor",
           description: TOOL_DESCRIPTION,
           input: OCADVISOR_INPUT_SCHEMA,
           async execute(
@@ -598,16 +600,16 @@ export async function setupOcAdvisorV2(ctx: {
     if (reg) registrations.push(reg);
   }
 
-  if (typeof ctx.session?.hook === 'function') {
+  if (typeof ctx.session?.hook === "function") {
     const reg = await ctx.session.hook(
-      'context',
+      "context",
       (event: {
         model?: { providerID?: string; id?: string; modelID?: string };
         tools?: Record<string, { description: string; input: unknown }>;
       }) => {
         if (!event.tools) return;
         for (const key of Object.keys(event.tools)) {
-          if (key.toLowerCase().replace(/[^a-z]/g, '') === 'ocadvisor') {
+          if (key.toLowerCase().replace(/[^a-z]/g, "") === "ocadvisor") {
             delete event.tools[key];
           }
         }
@@ -631,7 +633,7 @@ export async function setupOcAdvisorV2(ctx: {
 }
 
 const plugin = {
-  id: 'oc-advisor',
+  id: "oc-advisor",
   setup: setupOcAdvisorV2,
   server: OcAdvisorPlugin,
 };
