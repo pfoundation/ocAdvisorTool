@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 
 const DB_PATH = join(homedir(), ".local/share/opencode/opencode.db");
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
-const ADVISOR_MODEL = "claude-fable-5";
+const ADVISOR_MODEL = "claude-fable-5-1";
 const MAX_TOKENS = 64000;
 const ADVISOR_EFFORT = "max";
 const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
