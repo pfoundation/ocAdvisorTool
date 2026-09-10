@@ -73,6 +73,16 @@ Rules enforced by the tool description and an injected session instruction:
 - `src/ocAdvisor.ts` — the plugin. Registers the `ocAdvisor` tool, injects a
   short checkpoint instruction into eligible sessions via the `context` hook,
   and builds the transcript from the OpenCode SQLite database.
+- The tool is registered as a direct tool (`options.codemode: false`).
+  OpenCode 2 otherwise exposes plugin tools only through the `execute` Code
+  Mode tool, whose tool log records each nested call's input but hides the
+  script output on success, so the advisor's answer never appeared in the
+  TUI. As a direct tool, the TUI's tool log shows the call's `mode`,
+  `trigger`, and `question` fields followed by `output:` with the answer.
+  Direct calls also avoid Code Mode's output-size truncation. The `context`
+  hook can only hide the tool (Fable sessions), never add one, and the
+  checkpoint instruction is injected only when the tool is available to
+  the request.
 - Before each consultation it checks OpenCode for support of the configured
   advisor model: the provider is enabled (`catalog.provider.get`), the model
   is available (`catalog.model.list`, configured variant when listed), and a

@@ -377,6 +377,30 @@ describe("checkpoint guidance", () => {
   });
 });
 
+describe("tool registration", () => {
+  test("registers ocAdvisor as a direct tool outside Code Mode", async () => {
+    const added: Array<Record<string, unknown>> = [];
+    const ctx: V2PluginContext = {
+      tool: {
+        transform: async (
+          fn: (draft: { add: (tool: unknown) => void }) => void,
+        ) => {
+          fn({ add: (tool) => added.push(tool as Record<string, unknown>) });
+          return { dispose: () => {} };
+        },
+      },
+    };
+    await setupOcAdvisorV2(ctx);
+    expect(added).toHaveLength(1);
+    expect(added[0].name).toBe("ocAdvisor");
+    // OpenCode 2 exposes a tool to the model directly only with
+    // `codemode: false`; otherwise it is reachable only via `execute`,
+    // whose tool log shows the call's input but never the answer.
+    expect(added[0].options).toEqual({ codemode: false });
+    expect(typeof added[0].execute).toBe("function");
+  });
+});
+
 describe("context hook", () => {
   async function captureHook() {
     let handler: ((event: any) => void) | undefined;
@@ -393,15 +417,18 @@ describe("context hook", () => {
     return handler;
   }
 
-  test("injects a typed text system part and the tool for non-Fable models", async () => {
+  test("keeps the tool and injects a typed text system part for non-Fable models", async () => {
     const handler = await captureHook();
+    const tool = { description: "x", input: {} };
     const event = {
       model: { providerID: "xai", id: "grok-4.6" },
-      tools: {} as Record<string, unknown>,
+      tools: { ocAdvisor: tool } as Record<string, unknown>,
       system: [{ type: "text", text: "base prompt" }],
     };
     handler(event);
-    expect(Object.keys(event.tools)).toContain("ocAdvisor");
+    // The registered definition must survive untouched: OpenCode maps hook
+    // entries back to registered tools and drops ones it cannot match.
+    expect(event.tools.ocAdvisor).toBe(tool);
     expect(event.system).toHaveLength(2);
     // The 2.0 server validates system parts as { type: "text", text };
     // a part without `type` fails the request schema and kills the session.
@@ -409,6 +436,19 @@ describe("context hook", () => {
       type: "text",
       text: CHECKPOINT_INSTRUCTION,
     });
+  });
+
+  test("injects nothing when the tool is not available to the request", async () => {
+    const handler = await captureHook();
+    const event = {
+      model: { providerID: "xai", id: "grok-4.6" },
+      tools: {} as Record<string, unknown>,
+      system: [{ type: "text", text: "base prompt" }],
+    };
+    handler(event);
+    // A hook cannot add a direct tool; OpenCode drops unregistered entries.
+    expect(event.tools).toEqual({});
+    expect(event.system).toHaveLength(1);
   });
 
   test("hides the tool and injects nothing for Fable models", async () => {

@@ -1434,6 +1434,15 @@ export async function setupOcAdvisorV2(
           name: "ocAdvisor",
           description: TOOL_DESCRIPTION,
           input: OCADVISOR_INPUT_SCHEMA,
+          // Register as a direct tool, not a Code Mode tool. OpenCode 2 only
+          // exposes tools with `codemode: false` to the model directly; every
+          // other tool is reachable solely through `execute`, whose tool log
+          // records just the nested call's input and hides the script output
+          // on success — so the advisor's answer never appeared in the TUI.
+          // A direct call renders as the input fields (mode, trigger,
+          // question) followed by `output:` with the answer, and it also
+          // avoids Code Mode's output-size truncation.
+          options: { codemode: false },
           async execute(
             input: { mode?: string; trigger?: string; question?: string },
             context: {
@@ -1472,19 +1481,24 @@ export async function setupOcAdvisorV2(
         system?: Array<{ type: "text"; text: string }>;
       }) => {
         if (!event.tools) return;
+        // `event.tools` lists the direct tools available to this request.
+        // OpenCode drops entries a hook adds for tools it did not register,
+        // so the hook can only hide the tool (Fable sessions), never add it.
+        // The checkpoint instruction is injected only when the tool is
+        // actually available, e.g. not when a permission rule removed it.
+        let available = false;
         for (const key of Object.keys(event.tools)) {
-          if (key.toLowerCase().replace(/[^a-z]/g, "") === "ocadvisor") {
+          if (key.toLowerCase().replace(/[^a-z]/g, "") !== "ocadvisor") {
+            continue;
+          }
+          if (isFableModel(event.model)) {
             delete event.tools[key];
+          } else {
+            available = true;
           }
         }
-        if (isFableModel(event.model)) return;
-        event.tools.ocAdvisor = {
-          description: TOOL_DESCRIPTION,
-          input: OCADVISOR_INPUT_SCHEMA,
-        };
-        if (Array.isArray(event.system)) {
-          event.system.push({ type: "text", text: CHECKPOINT_INSTRUCTION });
-        }
+        if (!available || !Array.isArray(event.system)) return;
+        event.system.push({ type: "text", text: CHECKPOINT_INSTRUCTION });
       },
     );
     if (reg) registrations.push(reg);
