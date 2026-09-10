@@ -1,26 +1,159 @@
 import type { Plugin } from "@opencode-ai/plugin";
-import { tool } from "@opencode-ai/plugin/tool";
 import { Database } from "bun:sqlite";
-import { readFile } from "fs/promises";
+import { appendFile } from "fs/promises";
 import { homedir } from "os";
-import { dirname, join } from "path";
-import { fileURLToPath } from "url";
+import { join } from "path";
 
 const DB_PATH = join(homedir(), ".local/share/opencode/opencode.db");
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const METRICS_PATH = join(
+  homedir(),
+  ".local/share/opencode/ocAdvisor-metrics.jsonl",
+);
+const ADVISOR_PROVIDER = "anthropic";
 const ADVISOR_MODEL = "claude-fable-5-1";
-const MAX_TOKENS = 64000;
-const ADVISOR_EFFORT = "max";
-const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const ADVISOR_VARIANT = "max";
+const ADVISOR_SESSION_TITLE = "ocAdvisor";
+const ADVISOR_STORAGE_KEY = "advisorSessionID";
+const ADVISOR_TIMEOUT_MS = 300_000;
 const FABLE_DISABLED =
   "ocAdvisor is disabled for anthropic/claude-fable-* sessions — the current model is already Fable.";
 
-const ENV_SEARCH_PATHS = [
-  join(PROJECT_ROOT, ".env"),
-  join(homedir(), ".config/opencode/tool/.env"),
-  join(homedir(), ".config/opencode/.env"),
-  join(homedir(), ".env"),
-];
+// The advisor model is configurable via plugin options in opencode.json
+// (`{ "package": "...", "options": { "model": "anthropic/claude-fable-5-1#max" } }`)
+// or, for symlink/auto-discovered installs that cannot receive options,
+// via environment variables (OCADVISOR_MODEL, OCADVISOR_PROVIDER,
+// OCADVISOR_VARIANT, OCADVISOR_TIMEOUT_MS, OCADVISOR_MAX_TRANSCRIPT_CHARS).
+// Defaults preserve the original behavior: anthropic/claude-fable-5-1#max.
+interface AdvisorConfig {
+  provider: string;
+  model: string;
+  variant: string | undefined;
+  timeoutMs: number;
+  maxTranscriptChars: number;
+}
+
+const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = {
+  provider: ADVISOR_PROVIDER,
+  model: ADVISOR_MODEL,
+  variant: ADVISOR_VARIANT,
+  timeoutMs: ADVISOR_TIMEOUT_MS,
+  maxTranscriptChars: 0,
+};
+
+interface AdvisorConfigSource {
+  model?: unknown;
+  provider?: unknown;
+  variant?: unknown;
+  timeoutMs?: unknown;
+  timeout_ms?: unknown;
+  maxTranscriptChars?: unknown;
+  max_transcript_chars?: unknown;
+}
+
+function normalizeVariant(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  const text = String(value).trim();
+  if (!text || text.toLowerCase() === "none") return undefined;
+  return text;
+}
+
+function toBoundedInt(
+  value: unknown,
+  min: number,
+): number | undefined {
+  const raw =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : NaN;
+  return Number.isFinite(raw) && raw >= min ? Math.floor(raw) : undefined;
+}
+
+// Splits a "provider/model#variant" reference. All three parts are optional;
+// a bare "claude-opus-5" (no slash) is treated as a model id.
+function parseModelRef(ref: string): {
+  provider?: string;
+  model?: string;
+  variant?: string;
+} {
+  const out: { provider?: string; model?: string; variant?: string } = {};
+  let rest = ref.trim();
+  if (!rest) return out;
+  const hash = rest.indexOf("#");
+  if (hash >= 0) {
+    const variant = rest.slice(hash + 1).trim();
+    if (variant) out.variant = variant;
+    rest = rest.slice(0, hash).trim();
+  }
+  const slash = rest.indexOf("/");
+  if (slash >= 0) {
+    const provider = rest.slice(0, slash).trim();
+    const model = rest.slice(slash + 1).trim();
+    if (provider) out.provider = provider;
+    if (model) out.model = model;
+  } else if (rest) {
+    out.model = rest;
+  }
+  return out;
+}
+
+function applyAdvisorConfigSource(
+  base: AdvisorConfig,
+  src: AdvisorConfigSource | null | undefined,
+): AdvisorConfig {
+  if (!src || typeof src !== "object") return base;
+  const next: AdvisorConfig = { ...base };
+  if (typeof src.model === "string" && src.model.trim()) {
+    const parsed = parseModelRef(src.model);
+    if (parsed.provider) next.provider = parsed.provider;
+    if (parsed.model) next.model = parsed.model;
+    if (parsed.variant !== undefined) {
+      next.variant = normalizeVariant(parsed.variant);
+    }
+  }
+  if (typeof src.provider === "string" && src.provider.trim()) {
+    next.provider = src.provider.trim();
+  }
+  // An explicit `variant` (including null / "none") overrides the pin.
+  if (src.variant !== undefined) {
+    next.variant = normalizeVariant(src.variant);
+  }
+  const timeout = toBoundedInt(src.timeoutMs ?? src.timeout_ms, 1);
+  if (timeout !== undefined) next.timeoutMs = timeout;
+  const cap = toBoundedInt(
+    src.maxTranscriptChars ?? src.max_transcript_chars,
+    0,
+  );
+  if (cap !== undefined) next.maxTranscriptChars = cap;
+  return next;
+}
+
+function envAdvisorConfigSource(
+  env: Record<string, string | undefined> = process.env,
+): AdvisorConfigSource {
+  return {
+    model: env.OCADVISOR_MODEL,
+    provider: env.OCADVISOR_PROVIDER,
+    variant: env.OCADVISOR_VARIANT,
+    timeoutMs: env.OCADVISOR_TIMEOUT_MS,
+    maxTranscriptChars: env.OCADVISOR_MAX_TRANSCRIPT_CHARS,
+  };
+}
+
+// Precedence (low to high): built-in defaults, environment variables,
+// plugin options from opencode.json.
+function resolveAdvisorConfig(
+  options?: Record<string, unknown> | null,
+  env: Record<string, string | undefined> = process.env,
+): AdvisorConfig {
+  let config = applyAdvisorConfigSource(
+    DEFAULT_ADVISOR_CONFIG,
+    envAdvisorConfigSource(env),
+  );
+  config = applyAdvisorConfigSource(config, options as AdvisorConfigSource);
+  return config;
+}
 
 const SYSTEM_BASE = `You are a senior advisor reviewing a coding agent's work. You have the full session transcript.
 Respond in 500-750 words with structured analysis and enumerated steps. Be direct and actionable.`;
@@ -36,12 +169,60 @@ You are a software architect. Evaluate the current approach and plan. Identify r
 You are a debugger. Analyze error patterns, stack traces, and failed attempts in the transcript. Identify root causes, explain why previous fixes didn't work, and propose targeted solutions.`,
 };
 
-const TOOL_DESCRIPTION = `Consult an advanced model as a senior advisor. Reads the full session transcript directly from the OpenCode database — including parent sessions for subagents — and sends it to the model for high-quality analysis.
+const TOOL_DESCRIPTION = `Consult a senior advisor model with your full session transcript — including parent sessions for subagents — for high-quality analysis.
 
-Use this when you need a second opinion on your approach, want a thorough code review, need help debugging a persistent issue, or want architectural guidance before committing to a plan.
+Use ocAdvisor as a checkpoint on substantial, non-trivial work:
 
-Modes: "general" (default), "review" (code review), "plan" (architecture), "debug" (error analysis).
+- mode "plan": BEFORE committing to an approach — architectural decisions, cross-component changes, migrations, or competing approaches with real tradeoffs.
+- mode "debug": WHEN STUCK — the same problem failing twice, contradictory evidence, or a recurring unexplained failure.
+- mode "review": BEFORE declaring substantial implementation complete — after code and checks are done, ask for a focused review of correctness, regressions, and cases your tests do not establish.
+- mode "general": a second opinion that does not fit the above.
+
+Rules:
+- Always pass a concrete "question" naming the decision or artifact under review.
+- Typically 1-2 consultations per task: once before the approach crystallizes, once before declaring done. Consult again only on material change or new evidence.
+- Give the advice serious weight. A passing self-test alone is not counter-evidence; primary-source evidence (the file says X) is.
+- If the advisor conflicts with evidence you already retrieved, reconcile with one "followup" call stating both sides.
+
+Args: "mode" (general, review, plan, debug), "trigger" (before_approach, stuck, pre_complete, followup, other), "question" (concrete question focusing the advisor).
 `;
+
+const CHECKPOINT_INSTRUCTION = `[ocAdvisor checkpoint] On substantial, non-trivial work: consult ocAdvisor mode "plan" before committing to an approach, mode "debug" when stuck (2+ failed attempts or contradictory evidence), and mode "review" before declaring implementation complete. Always pass a concrete question. Typically 1-2 consultations per task; repeat only on material change or new evidence. Give the advice serious weight.`;
+
+const ADVISOR_TRIGGERS = [
+  "before_approach",
+  "stuck",
+  "pre_complete",
+  "followup",
+  "other",
+] as const;
+type AdvisorTrigger = (typeof ADVISOR_TRIGGERS)[number];
+
+type AdvisorOutcome =
+  | "advisor_response"
+  | "skipped_fable"
+  | "error"
+  | "no_transcript"
+  | "no_session";
+
+interface AdvisorMetrics {
+  ts: string;
+  sessionId: string | null;
+  callerModel: string | null;
+  callerAgent: string | null;
+  directory: string | null;
+  mode: string;
+  trigger: AdvisorTrigger;
+  questionChars: number;
+  outcome: AdvisorOutcome;
+  errorType: string | null;
+  latencyMs: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  transcriptChars: number;
+  priorConsultations: number;
+  via: string;
+}
 
 const OCADVISOR_INPUT_SCHEMA = {
   type: "object",
@@ -51,9 +232,16 @@ const OCADVISOR_INPUT_SCHEMA = {
       enum: ["general", "review", "plan", "debug"],
       description: "Advisory mode: general, review, plan, or debug",
     },
+    trigger: {
+      type: "string",
+      enum: ["before_approach", "stuck", "pre_complete", "followup", "other"],
+      description:
+        "Why you are consulting now: before_approach, stuck, pre_complete, followup, or other",
+    },
     question: {
       type: "string",
-      description: "Optional specific question to focus the advisor on",
+      description:
+        "Concrete question naming the decision or artifact under review",
     },
   },
 };
@@ -88,39 +276,29 @@ interface SessionModel {
   provider?: string;
 }
 
-async function loadEnvKey(varName: string): Promise<string | null> {
-  for (const envPath of ENV_SEARCH_PATHS) {
-    try {
-      const content = await readFile(envPath, "utf-8");
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed.startsWith("#") || !trimmed.includes("=")) continue;
-        const eqIdx = trimmed.indexOf("=");
-        const key = trimmed.slice(0, eqIdx).trim();
-        if (key !== varName) continue;
-        let value = trimmed.slice(eqIdx + 1).trim();
-        if (
-          (value.startsWith('"') && value.endsWith('"')) ||
-          (value.startsWith("'") && value.endsWith("'"))
-        ) {
-          value = value.slice(1, -1);
-        }
-        if (value) return value;
-      }
-    } catch {
-      // File not found, try next
-    }
-  }
-  return null;
+interface SessionInfo {
+  model: SessionModel | null;
+  agent: string | null;
+  directory: string | null;
+  parentId: string | null;
 }
 
-async function getApiKey(): Promise<string> {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-
-  const envKey = await loadEnvKey("ANTHROPIC_API_KEY");
-  if (envKey) return envKey;
-
-  return "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";
+interface V2PluginContext {
+  tool?: { transform?: Function };
+  session?: {
+    hook?: Function;
+    create?: Function;
+    get?: Function;
+    list?: Function;
+    switchModel?: Function;
+    generate?: Function;
+  };
+  catalog?: {
+    provider?: { get?: Function; list?: Function };
+    model?: { list?: Function };
+  };
+  integration?: { connection?: { active?: Function } };
+  storage?: { get?: Function; set?: Function };
 }
 
 function openDb(): InstanceType<typeof Database> {
@@ -145,32 +323,6 @@ function parseModelJson(raw: string | null | undefined): SessionModel | null {
   return null;
 }
 
-function getSessionModel(
-  db: InstanceType<typeof Database>,
-  sessionId: string,
-): SessionModel | null {
-  if (tableExists(db, "session_v2")) {
-    const row = db
-      .query<
-        { model: string | null },
-        [string]
-      >("SELECT model FROM session_v2 WHERE id = ?")
-      .get(sessionId);
-    const model = parseModelJson(row?.model);
-    if (model) return model;
-  }
-  if (tableExists(db, "session")) {
-    const row = db
-      .query<
-        { model: string | null },
-        [string]
-      >("SELECT model FROM session WHERE id = ?")
-      .get(sessionId);
-    return parseModelJson(row?.model);
-  }
-  return null;
-}
-
 function isFableModel(
   model:
     | {
@@ -190,11 +342,225 @@ function isFableModel(
   return provider.includes("anthropic") && id.includes("fable");
 }
 
-function isFableSession(
+function inferTrigger(
+  mode: string | undefined,
+  trigger: string | undefined,
+): AdvisorTrigger {
+  if (trigger && (ADVISOR_TRIGGERS as readonly string[]).includes(trigger)) {
+    return trigger as AdvisorTrigger;
+  }
+  switch ((mode || "general").toLowerCase()) {
+    case "plan":
+      return "before_approach";
+    case "debug":
+      return "stuck";
+    case "review":
+      return "pre_complete";
+    default:
+      return "other";
+  }
+}
+
+function classifyAdvisorError(message: string): string {
+  const text = message.toLowerCase();
+  if (
+    text.includes("credit balance is too low") ||
+    text.includes("insufficient")
+  ) {
+    return "insufficient_credit";
+  }
+  if (text.includes("rate_limit") || text.includes(" 429")) {
+    return "rate_limit";
+  }
+  if (
+    text.includes("failed to parse json") ||
+    text.includes("unexpected token")
+  ) {
+    return "json_parse";
+  }
+  if (text.includes("aborted") || text.includes("abort")) {
+    return "aborted";
+  }
+  if (text.includes("timeout") || text.includes("timed out")) {
+    return "timeout";
+  }
+  if (
+    text.includes(" 401") ||
+    text.includes("unauthorized") ||
+    text.includes("invalid x-api-key") ||
+    text.includes("authentication") ||
+    text.includes("no anthropic connection") ||
+    text.includes("connection configured") ||
+    text.includes("not connected") ||
+    text.includes("needs authentication") ||
+    text.includes("missing credential")
+  ) {
+    return "auth";
+  }
+  if (
+    text.includes("model unavailable") ||
+    text.includes("model not found") ||
+    (text.includes("model") &&
+      (text.includes("not enabled") || text.includes("disabled")))
+  ) {
+    return "model_unavailable";
+  }
+  if (
+    text.includes("provider") &&
+    (text.includes("unavailable") ||
+      text.includes("disabled") ||
+      text.includes("not found") ||
+      text.includes("service unavailable"))
+  ) {
+    return "provider_unavailable";
+  }
+  if (text.includes("no transcript")) return "no_transcript";
+  if (text.includes("no session")) return "no_session";
+  return "api_error";
+}
+
+function callerLabel(model: SessionModel | null): string | null {
+  if (!model) return null;
+  const provider = model.providerID || model.provider || "unknown";
+  const id = model.id || model.modelID || "unknown";
+  return `${provider}/${id}`;
+}
+
+function getSessionInfo(
   db: InstanceType<typeof Database>,
   sessionId: string,
-): boolean {
-  return isFableModel(getSessionModel(db, sessionId));
+): SessionInfo | null {
+  for (const table of ["session_v2", "session"]) {
+    if (!tableExists(db, table)) continue;
+    try {
+      const row = db
+        .query<
+          {
+            model: string | null;
+            agent: string | null;
+            directory: string | null;
+            parent_id: string | null;
+          },
+          [string]
+        >(
+          `SELECT model, agent, directory, parent_id FROM ${table} WHERE id = ?`,
+        )
+        .get(sessionId);
+      if (row) {
+        return {
+          model: parseModelJson(row.model),
+          agent: row.agent ?? null,
+          directory: row.directory ?? null,
+          parentId: row.parent_id ?? null,
+        };
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function collectSessionChain(
+  db: InstanceType<typeof Database>,
+  sessionId: string,
+): string[] {
+  const chain: string[] = [];
+  const visited = new Set<string>();
+  let current: string | null = sessionId;
+  while (current && !visited.has(current) && chain.length < 10) {
+    visited.add(current);
+    chain.push(current);
+    current = getSessionInfo(db, current)?.parentId ?? null;
+  }
+  return chain;
+}
+
+function isTerminalToolStatus(status: unknown): boolean {
+  return status === "completed" || status === "error";
+}
+
+function countPriorAdvisorCalls(
+  db: InstanceType<typeof Database>,
+  sessionId: string,
+): { count: number; modes: string[] } {
+  const callIds = new Set<string>();
+  const modes: string[] = [];
+  try {
+    for (const sid of collectSessionChain(db, sessionId)) {
+      if (tableExists(db, "session_message")) {
+        const rows = db
+          .query<{ id: string; data: string }, [string]>(
+            "SELECT id, data FROM session_message WHERE session_id = ? AND type = 'assistant'",
+          )
+          .all(sid);
+        for (const row of rows) {
+          let data: Record<string, any>;
+          try {
+            data = JSON.parse(row.data);
+          } catch {
+            continue;
+          }
+          for (const block of data.content || []) {
+            if (!block || typeof block !== "object") continue;
+            if (block.type !== "tool") continue;
+            const name = String(block.name || block.tool || "");
+            const state = block.state || {};
+            if (!isTerminalToolStatus(state.status)) continue;
+            const nested = state.metadata?.toolCalls || [];
+            if (name.toLowerCase() === "ocadvisor") {
+              const cid = String(block.id || block.callID || row.id);
+              if (!callIds.has(cid)) {
+                callIds.add(cid);
+                modes.push(String(state.input?.mode || "general"));
+              }
+            }
+            nested.forEach((call: Record<string, any>, index: number) => {
+              if (
+                String(call.tool || call.name || "").toLowerCase() ===
+                "ocadvisor"
+              ) {
+                const cid = `${block.id || row.id}#${index}`;
+                if (!callIds.has(cid)) {
+                  callIds.add(cid);
+                  modes.push(String(call.input?.mode || "general"));
+                }
+              }
+            });
+          }
+        }
+      }
+      if (tableExists(db, "part")) {
+        const rows = db
+          .query<{ data: string }, [string]>(
+            "SELECT data FROM part WHERE session_id = ? AND json_extract(data, '$.type') = 'tool'",
+          )
+          .all(sid);
+        for (const row of rows) {
+          let block: Record<string, any>;
+          try {
+            block = JSON.parse(row.data);
+          } catch {
+            continue;
+          }
+          const name = String(block.tool || block.name || "");
+          if (name.toLowerCase() !== "ocadvisor") continue;
+          if (!isTerminalToolStatus(block.state?.status)) continue;
+          const cid = String(block.callID || block.id || "");
+          if (!cid || callIds.has(cid)) continue;
+          callIds.add(cid);
+          modes.push(String(block.state?.input?.mode || "general"));
+        }
+      }
+    }
+  } catch {}
+  return { count: callIds.size, modes };
+}
+
+async function logAdvisorMetrics(metrics: AdvisorMetrics): Promise<void> {
+  try {
+    await appendFile(METRICS_PATH, JSON.stringify(metrics) + "\n", "utf-8");
+  } catch {
+    // Metrics must never break the advisor call.
+  }
 }
 
 function getSession(
@@ -202,10 +568,9 @@ function getSession(
   sessionId: string,
 ): SessionRow | null {
   return db
-    .query<
-      SessionRow,
-      [string]
-    >("SELECT id, parent_id, title, directory FROM session WHERE id = ?")
+    .query<SessionRow, [string]>(
+      "SELECT id, parent_id, title, directory FROM session WHERE id = ?",
+    )
     .get(sessionId);
 }
 
@@ -214,10 +579,9 @@ function getSessionV2(
   sessionId: string,
 ): SessionRow | null {
   return db
-    .query<
-      SessionRow,
-      [string]
-    >("SELECT id, parent_id, title, directory FROM session_v2 WHERE id = ?")
+    .query<SessionRow, [string]>(
+      "SELECT id, parent_id, title, directory FROM session_v2 WHERE id = ?",
+    )
     .get(sessionId);
 }
 
@@ -226,10 +590,9 @@ function getMessages(
   sessionId: string,
 ): MessageRow[] {
   return db
-    .query<
-      MessageRow,
-      [string]
-    >("SELECT id, data, time_created FROM message WHERE session_id = ? ORDER BY time_created ASC")
+    .query<MessageRow, [string]>(
+      "SELECT id, data, time_created FROM message WHERE session_id = ? ORDER BY time_created ASC",
+    )
     .all(sessionId);
 }
 
@@ -238,10 +601,9 @@ function getParts(
   messageId: string,
 ): PartRow[] {
   return db
-    .query<
-      PartRow,
-      [string]
-    >("SELECT data, time_created FROM part WHERE message_id = ? ORDER BY time_created ASC")
+    .query<PartRow, [string]>(
+      "SELECT data, time_created FROM part WHERE message_id = ? ORDER BY time_created ASC",
+    )
     .all(messageId);
 }
 
@@ -250,10 +612,9 @@ function getSessionMessages(
   sessionId: string,
 ): SessionMessageRow[] {
   return db
-    .query<
-      SessionMessageRow,
-      [string]
-    >("SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq ASC")
+    .query<SessionMessageRow, [string]>(
+      "SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq ASC",
+    )
     .all(sessionId);
 }
 
@@ -456,125 +817,615 @@ function buildTranscript(
   return buildTranscriptV1(db, sessionId);
 }
 
-async function callAdvisor(
+function buildAdvisorPrompt(
   systemPrompt: string,
   transcript: string,
   question: string | undefined,
-  signal?: AbortSignal,
-): Promise<string> {
-  const apiKey = await getApiKey();
+  priorNote: string | null,
+): string {
+  const body = priorNote ? `${transcript}\n\n---\n${priorNote}` : transcript;
+  const task = question
+    ? `Specific question: ${question}`
+    : "Please analyze the above session and provide your advisory guidance.";
+  return `${systemPrompt}\n\nHere is the full session transcript:\n\n${body}\n\n---\n\n${task}`;
+}
 
-  const userContent = question
-    ? `Here is the full session transcript:\n\n${transcript}\n\n---\n\nSpecific question: ${question}`
-    : `Here is the full session transcript:\n\n${transcript}\n\n---\n\nPlease analyze the above session and provide your advisory guidance.`;
+function unwrapData<T>(value: T | { data: T } | null | undefined): T | null {
+  if (value === null || value === undefined) return null;
+  if (
+    typeof value === "object" &&
+    "data" in (value as Record<string, unknown>)
+  ) {
+    return (value as { data: T }).data ?? null;
+  }
+  return value as T;
+}
 
-  const response = await fetch(ANTHROPIC_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: ADVISOR_MODEL,
-      max_tokens: MAX_TOKENS,
-      output_config: { effort: ADVISOR_EFFORT },
-      system: systemPrompt,
-      messages: [{ role: "user", content: userContent }],
-    }),
-    signal,
-  });
+function extractGeneratedText(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+  return extractGeneratedText(record.data);
+}
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Anthropic API error ${response.status}: ${errorBody}`);
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${ms} ms`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+interface CatalogModelRef {
+  providerID?: string;
+  id?: string;
+  modelID?: string;
+  enabled?: boolean;
+  status?: string;
+  variants?: Array<{ id?: string }>;
+}
+
+function isProviderUsable(
+  provider: { activation?: string } | null | undefined,
+): boolean {
+  if (!provider) return false;
+  return provider.activation !== "disabled";
+}
+
+function findAdvisorModel(
+  models: CatalogModelRef[] | null | undefined,
+  config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
+): CatalogModelRef | null {
+  if (!Array.isArray(models)) return null;
+  for (const model of models) {
+    if (!model || typeof model !== "object") continue;
+    if (model.providerID !== config.provider) continue;
+    if (model.id !== config.model && model.modelID !== config.model) continue;
+    if (model.enabled === false) continue;
+    return model;
+  }
+  return null;
+}
+
+function resolveAdvisorVariant(
+  model: CatalogModelRef | null | undefined,
+  config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
+): string | undefined {
+  if (config.variant === undefined) return undefined;
+  if (!model || !Array.isArray(model.variants)) return config.variant;
+  const ids = model.variants.map((variant) => variant?.id);
+  return ids.includes(config.variant) ? config.variant : undefined;
+}
+
+function hasAdvisorConnection(connection: unknown): boolean {
+  if (connection === null || connection === undefined) return false;
+  if (typeof connection === "object" && !Array.isArray(connection)) {
+    const record = connection as Record<string, unknown>;
+    if (record.active === false || record.available === false) return false;
+    if (record.status === "disconnected" || record.status === "expired") {
+      return false;
+    }
+  }
+  return true;
+}
+
+type AdvisorSupport =
+  | { supported: true; variant: string | undefined }
+  | { supported: false; reason: string };
+
+async function checkAdvisorSupport(
+  runtime: V2PluginContext,
+  config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
+): Promise<AdvisorSupport> {
+  if (typeof runtime.catalog?.provider?.get === "function") {
+    let provider: { activation?: string } | null = null;
+    try {
+      provider = unwrapData(
+        (await runtime.catalog.provider.get({
+          providerID: config.provider,
+        })) as { activation?: string } | { data: { activation?: string } },
+      );
+    } catch (err) {
+      return {
+        supported: false,
+        reason: `Provider ${config.provider} unavailable in OpenCode: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    if (!isProviderUsable(provider)) {
+      return {
+        supported: false,
+        reason: `Advisor provider is disabled or unavailable in OpenCode (provider: ${config.provider}).`,
+      };
+    }
   }
 
-  const result = (await response.json()) as {
-    content: Array<{ type: string; text?: string }>;
-    usage?: { input_tokens?: number; output_tokens?: number };
-  };
-  const text = result.content
-    ?.filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
-  const usage = result.usage;
-  const usageStr = usage
-    ? `\n\n---\n_ocAdvisor: ${usage.input_tokens?.toLocaleString()} input + ${usage.output_tokens?.toLocaleString()} output tokens (${ADVISOR_MODEL}, effort=${ADVISOR_EFFORT})_`
-    : "";
+  let variant: string | undefined = config.variant;
+  if (typeof runtime.catalog?.model?.list === "function") {
+    let models: CatalogModelRef[] | null = null;
+    try {
+      models = unwrapData(
+        (await runtime.catalog.model.list()) as
+          CatalogModelRef[] | { data: CatalogModelRef[] },
+      );
+    } catch (err) {
+      return {
+        supported: false,
+        reason: `Could not list OpenCode models: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    const model = findAdvisorModel(models, config);
+    if (!model) {
+      return {
+        supported: false,
+        reason: `Model unavailable: ${config.provider}/${config.model}`,
+      };
+    }
+    variant = resolveAdvisorVariant(model, config);
+  }
 
-  return (text || "(No response from advisor)") + usageStr;
+  if (typeof runtime.integration?.connection?.active === "function") {
+    let connection: unknown = null;
+    try {
+      connection =
+        await runtime.integration.connection.active(config.provider);
+    } catch (err) {
+      return {
+        supported: false,
+        reason: `Could not check the ${config.provider} connection in OpenCode: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    if (!hasAdvisorConnection(connection)) {
+      return {
+        supported: false,
+        reason: `No ${config.provider} connection configured in OpenCode (sign in or connect an API key first).`,
+      };
+    }
+  }
+
+  return { supported: true, variant };
+}
+
+let cachedAdvisorSessionId: string | null = null;
+let advisorQueue: Promise<unknown> = Promise.resolve();
+
+function resetAdvisorSessionCache(): void {
+  cachedAdvisorSessionId = null;
+}
+
+function enqueueAdvisor<T>(task: () => Promise<T>): Promise<T> {
+  const next = advisorQueue.then(task, task);
+  advisorQueue = next.catch(() => {});
+  return next;
+}
+
+function readSessionId(value: unknown): string | null {
+  const session = unwrapData(
+    value as { id?: string } | { data: { id?: string } },
+  );
+  return typeof session?.id === "string" ? session.id : null;
+}
+
+function readSessionList(value: unknown): Array<Record<string, unknown>> {
+  const list = unwrapData(value as unknown[] | { data: unknown[] });
+  return Array.isArray(list)
+    ? list.filter(
+        (entry): entry is Record<string, unknown> =>
+          !!entry && typeof entry === "object",
+      )
+    : [];
+}
+
+async function readStoredAdvisorSessionId(
+  runtime: V2PluginContext,
+): Promise<string | null> {
+  if (typeof runtime.storage?.get !== "function") return null;
+  try {
+    const stored = await runtime.storage.get(ADVISOR_STORAGE_KEY);
+    return typeof stored === "string" && stored.startsWith("ses")
+      ? stored
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function storeAdvisorSessionId(
+  runtime: V2PluginContext,
+  sessionId: string,
+): Promise<void> {
+  if (typeof runtime.storage?.set !== "function") return;
+  try {
+    await runtime.storage.set(ADVISOR_STORAGE_KEY, sessionId);
+  } catch {}
+}
+
+async function getAdvisorSession(
+  runtime: V2PluginContext,
+  sessionId: string,
+): Promise<Record<string, unknown> | null> {
+  if (typeof runtime.session?.get !== "function") return null;
+  try {
+    const session = unwrapData(
+      (await runtime.session.get({ sessionID: sessionId })) as
+        Record<string, unknown> | { data: Record<string, unknown> },
+    );
+    return session && typeof session === "object" ? session : null;
+  } catch {
+    return null;
+  }
+}
+
+function advisorSessionNeedsModel(
+  session: Record<string, unknown> | null,
+  config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
+): boolean {
+  if (!session) return true;
+  const model = session.model as
+    { providerID?: string; id?: string; modelID?: string } | undefined;
+  if (!model || typeof model !== "object") return true;
+  const provider = String(model.providerID || "").toLowerCase();
+  const id = String(model.id || model.modelID || "").toLowerCase();
+  return (
+    provider !== config.provider.toLowerCase() ||
+    id !== config.model.toLowerCase()
+  );
+}
+
+async function switchAdvisorSessionModel(
+  runtime: V2PluginContext,
+  sessionId: string,
+  variant: string | undefined,
+  config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
+): Promise<void> {
+  if (typeof runtime.session?.switchModel !== "function") {
+    throw new Error(
+      "OpenCode runtime cannot switch the advisor session model (session.switchModel unavailable).",
+    );
+  }
+  const model: { providerID: string; id: string; variant?: string } = {
+    providerID: config.provider,
+    id: config.model,
+  };
+  if (variant) model.variant = variant;
+  await runtime.session.switchModel({ sessionID: sessionId, model });
+}
+
+async function ensureAdvisorSession(
+  runtime: V2PluginContext,
+  variant: string | undefined,
+  config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
+): Promise<string> {
+  const candidates: Array<string | null> = [
+    cachedAdvisorSessionId,
+    await readStoredAdvisorSessionId(runtime),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const session = await getAdvisorSession(runtime, candidate);
+    if (!session) continue;
+    if (advisorSessionNeedsModel(session, config)) {
+      await switchAdvisorSessionModel(runtime, candidate, variant, config);
+    }
+    cachedAdvisorSessionId = candidate;
+    return candidate;
+  }
+
+  if (typeof runtime.session?.list === "function") {
+    try {
+      const sessions = readSessionList(await runtime.session.list());
+      const existing = sessions.find(
+        (session) => session.title === ADVISOR_SESSION_TITLE,
+      );
+      const existingId = typeof existing?.id === "string" ? existing.id : null;
+      if (existing && existingId) {
+        if (advisorSessionNeedsModel(existing, config)) {
+          await switchAdvisorSessionModel(runtime, existingId, variant, config);
+        }
+        cachedAdvisorSessionId = existingId;
+        await storeAdvisorSessionId(runtime, existingId);
+        return existingId;
+      }
+    } catch {}
+  }
+
+  if (typeof runtime.session?.create !== "function") {
+    throw new Error(
+      "OpenCode runtime cannot create the advisor session (session.create unavailable).",
+    );
+  }
+  const created = await runtime.session.create({
+    title: ADVISOR_SESSION_TITLE,
+  });
+  const sessionId = readSessionId(created);
+  if (!sessionId) {
+    throw new Error("OpenCode did not return an advisor session id.");
+  }
+  await switchAdvisorSessionModel(runtime, sessionId, variant, config);
+  cachedAdvisorSessionId = sessionId;
+  await storeAdvisorSessionId(runtime, sessionId);
+  return sessionId;
+}
+
+async function callAdvisor(opts: {
+  runtime: V2PluginContext | null | undefined;
+  systemPrompt: string;
+  transcript: string;
+  question: string | undefined;
+  priorNote: string | null;
+  signal?: AbortSignal;
+  config?: AdvisorConfig;
+}): Promise<{
+  text: string;
+  inputTokens: null;
+  outputTokens: null;
+}> {
+  const runtime = opts.runtime;
+  const config = opts.config ?? DEFAULT_ADVISOR_CONFIG;
+  if (typeof runtime?.session?.generate !== "function") {
+    throw new Error(
+      "ocAdvisor requires the OpenCode V2 plugin runtime (session.generate unavailable).",
+    );
+  }
+
+  const support = await checkAdvisorSupport(runtime, config);
+  if (!support.supported) {
+    throw new Error(support.reason);
+  }
+
+  const prompt = buildAdvisorPrompt(
+    opts.systemPrompt,
+    opts.transcript,
+    opts.question,
+    opts.priorNote,
+  );
+  const generate = runtime.session.generate.bind(runtime.session);
+  // The timeout wraps only the generation, not the time spent waiting in the
+  // queue behind other advisor calls — otherwise a backlog guarantees timeouts.
+  const text = await enqueueAdvisor(() =>
+    withTimeout(
+      (async () => {
+        const sessionId = await ensureAdvisorSession(
+          runtime,
+          support.variant,
+          config,
+        );
+        const request = { sessionID: sessionId, prompt };
+        const result = opts.signal
+          ? await generate(request, { signal: opts.signal })
+          : await generate(request);
+        const output = extractGeneratedText(result);
+        if (!output?.trim()) {
+          throw new Error("Advisor returned an empty response.");
+        }
+        return output;
+      })(),
+      config.timeoutMs,
+      "Advisor generation",
+    ),
+  );
+
+  const modelLabel = support.variant
+    ? `${config.provider}/${config.model} (effort=${support.variant})`
+    : `${config.provider}/${config.model}`;
+  return {
+    text: `${text}\n\n---\n_ocAdvisor via OpenCode: ${modelLabel} (token usage unavailable via session generation)_`,
+    inputTokens: null,
+    outputTokens: null,
+  };
 }
 
 async function runAdvisor(opts: {
+  runtime: V2PluginContext | null | undefined;
   sessionId?: string;
   mode?: string;
+  trigger?: string;
   question?: string;
   signal?: AbortSignal;
+  callerAgent?: string;
+  callerDirectory?: string;
+  config?: AdvisorConfig;
 }): Promise<string> {
+  const started = Date.now();
+  const config = opts.config ?? DEFAULT_ADVISOR_CONFIG;
+  const mode = opts.mode || "general";
+  const trigger = inferTrigger(opts.mode, opts.trigger);
   const sessionId = opts.sessionId;
+  const questionChars = opts.question?.length ?? 0;
+
   if (!sessionId) {
-    return "Error: No session ID available. ocAdvisor requires a valid OpenCode session context.";
+    await logAdvisorMetrics({
+      ts: new Date().toISOString(),
+      sessionId: null,
+      callerModel: null,
+      callerAgent: opts.callerAgent || null,
+      directory: opts.callerDirectory || null,
+      mode,
+      trigger,
+      questionChars,
+      outcome: "no_session",
+      errorType: "no_session",
+      latencyMs: Date.now() - started,
+      inputTokens: null,
+      outputTokens: null,
+      transcriptChars: 0,
+      priorConsultations: 0,
+      via: "opencode-session",
+    });
+    throw new Error(
+      "ocAdvisor requires a valid OpenCode session context (no session ID available).",
+    );
   }
 
   let db: InstanceType<typeof Database> | null = null;
   try {
     db = openDb();
-    if (isFableSession(db, sessionId)) return FABLE_DISABLED;
+    const info = getSessionInfo(db, sessionId);
+    const callerModel = callerLabel(info?.model ?? null);
+    const callerAgent = opts.callerAgent || info?.agent || null;
+    const directory = opts.callerDirectory || info?.directory || null;
 
-    const transcript = buildTranscript(db, sessionId);
-    if (!transcript?.trim()) {
-      return `No transcript found for session ${sessionId}.`;
+    if (isFableModel(info?.model)) {
+      await logAdvisorMetrics({
+        ts: new Date().toISOString(),
+        sessionId,
+        callerModel,
+        callerAgent,
+        directory,
+        mode,
+        trigger,
+        questionChars,
+        outcome: "skipped_fable",
+        errorType: null,
+        latencyMs: Date.now() - started,
+        inputTokens: null,
+        outputTokens: null,
+        transcriptChars: 0,
+        priorConsultations: 0,
+        via: "opencode-session",
+      });
+      console.log(
+        `[ocAdvisor] session=${sessionId} mode=${mode} outcome=skipped_fable (already Fable)`,
+      );
+      return FABLE_DISABLED;
     }
 
-    const systemPrompt =
-      SYSTEM_PROMPTS[opts.mode || "general"] || SYSTEM_PROMPTS.general;
-    return await callAdvisor(
-      systemPrompt,
-      transcript,
-      opts.question,
-      opts.signal,
-    );
-  } catch (err) {
-    return `Error calling advisor: ${err instanceof Error ? err.message : String(err)}`;
+    let transcript = buildTranscript(db, sessionId);
+    if (!transcript?.trim()) {
+      await logAdvisorMetrics({
+        ts: new Date().toISOString(),
+        sessionId,
+        callerModel,
+        callerAgent,
+        directory,
+        mode,
+        trigger,
+        questionChars,
+        outcome: "no_transcript",
+        errorType: "no_transcript",
+        latencyMs: Date.now() - started,
+        inputTokens: null,
+        outputTokens: null,
+        transcriptChars: 0,
+        priorConsultations: 0,
+        via: "opencode-session",
+      });
+      throw new Error(`No transcript found for session ${sessionId}.`);
+    }
+
+    // Cap oversized transcripts, keeping the most recent tail. Large
+    // transcripts drive advisor latency and can blow the generation timeout.
+    if (
+      config.maxTranscriptChars > 0 &&
+      transcript.length > config.maxTranscriptChars
+    ) {
+      transcript =
+        "... (older transcript trimmed to fit maxTranscriptChars) ...\n\n" +
+        transcript.slice(-config.maxTranscriptChars);
+    }
+
+    const prior = countPriorAdvisorCalls(db, sessionId);
+    const priorNote =
+      prior.count > 0
+        ? `Note: this session chain already has ${prior.count} recorded ocAdvisor consultation(s) (modes: ${prior.modes.join(", ") || "unknown"}). Focus on what is new since then; do not repeat settled advice unless new evidence changes it.`
+        : null;
+
+    const systemPrompt = SYSTEM_PROMPTS[mode] || SYSTEM_PROMPTS.general;
+    try {
+      const result = await callAdvisor({
+        runtime: opts.runtime,
+        systemPrompt,
+        transcript,
+        question: opts.question,
+        priorNote,
+        signal: opts.signal,
+        config,
+      });
+      const latencyMs = Date.now() - started;
+      await logAdvisorMetrics({
+        ts: new Date().toISOString(),
+        sessionId,
+        callerModel,
+        callerAgent,
+        directory,
+        mode,
+        trigger,
+        questionChars,
+        outcome: "advisor_response",
+        errorType: null,
+        latencyMs,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        transcriptChars: transcript.length,
+        priorConsultations: prior.count,
+        via: "opencode-session",
+      });
+      console.log(
+        `[ocAdvisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=advisor_response latencyMs=${latencyMs}`,
+      );
+      return (
+        result.text +
+        `\n\n_ocAdvisor consultation #${prior.count + 1} in this session chain (trigger=${trigger})_`
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const errorType = classifyAdvisorError(message);
+      const latencyMs = Date.now() - started;
+      await logAdvisorMetrics({
+        ts: new Date().toISOString(),
+        sessionId,
+        callerModel,
+        callerAgent,
+        directory,
+        mode,
+        trigger,
+        questionChars,
+        outcome: "error",
+        errorType,
+        latencyMs,
+        inputTokens: null,
+        outputTokens: null,
+        transcriptChars: transcript.length,
+        priorConsultations: prior.count,
+        via: "opencode-session",
+      });
+      console.log(
+        `[ocAdvisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=error errorType=${errorType} latencyMs=${latencyMs}`,
+      );
+      throw new Error(`ocAdvisor failed (${errorType}): ${message}`);
+    }
   } finally {
     db?.close();
   }
 }
 
 export const OcAdvisorPlugin: Plugin = async () => {
-  return {
-    tool: {
-      ocAdvisor: tool({
-        description: TOOL_DESCRIPTION,
-        args: {
-          mode: tool.schema
-            .enum(["general", "review", "plan", "debug"])
-            .default("general")
-            .describe("Advisory mode: general, review, plan, or debug"),
-          question: tool.schema
-            .string()
-            .optional()
-            .describe("Optional specific question to focus the advisor on"),
-        },
-        async execute(args, context) {
-          return runAdvisor({
-            sessionId: context.sessionID,
-            mode: args.mode,
-            question: args.question,
-            signal: context.abort,
-          });
-        },
-      }),
-    },
-  };
+  // ocAdvisor requires the OpenCode V2 runtime (session-scoped generation
+  // with the configured Anthropic connection). The V1 raw-Anthropic path was
+  // removed in 2.0, so V1 runtimes get no tool rather than a broken one.
+  return {};
 };
 
-export async function setupOcAdvisorV2(ctx: {
-  tool?: { transform?: Function };
-  session?: { hook?: Function };
-}): Promise<(() => void) | void> {
+export async function setupOcAdvisorV2(
+  ctx: V2PluginContext,
+): Promise<(() => void) | void> {
   const registrations: Array<{ dispose?: () => Promise<void> | void }> = [];
+  const advisorConfig = resolveAdvisorConfig(
+    (ctx as { options?: Record<string, unknown> }).options,
+  );
 
   if (typeof ctx.tool?.transform === "function") {
     const reg = await ctx.tool.transform(
@@ -584,13 +1435,25 @@ export async function setupOcAdvisorV2(ctx: {
           description: TOOL_DESCRIPTION,
           input: OCADVISOR_INPUT_SCHEMA,
           async execute(
-            input: { mode?: string; question?: string },
-            context: { sessionID?: string },
+            input: { mode?: string; trigger?: string; question?: string },
+            context: {
+              sessionID?: string;
+              sessionId?: string;
+              agent?: string;
+              directory?: string;
+              abort?: AbortSignal;
+            },
           ) {
             const text = await runAdvisor({
-              sessionId: context.sessionID,
+              runtime: ctx,
+              sessionId: context.sessionID ?? context.sessionId,
               mode: input?.mode,
+              trigger: input?.trigger,
               question: input?.question,
+              signal: context.abort,
+              callerAgent: context.agent,
+              callerDirectory: context.directory,
+              config: advisorConfig,
             });
             return { content: text };
           },
@@ -606,6 +1469,7 @@ export async function setupOcAdvisorV2(ctx: {
       (event: {
         model?: { providerID?: string; id?: string; modelID?: string };
         tools?: Record<string, { description: string; input: unknown }>;
+        system?: Array<{ type: "text"; text: string }>;
       }) => {
         if (!event.tools) return;
         for (const key of Object.keys(event.tools)) {
@@ -618,6 +1482,9 @@ export async function setupOcAdvisorV2(ctx: {
           description: TOOL_DESCRIPTION,
           input: OCADVISOR_INPUT_SCHEMA,
         };
+        if (Array.isArray(event.system)) {
+          event.system.push({ type: "text", text: CHECKPOINT_INSTRUCTION });
+        }
       },
     );
     if (reg) registrations.push(reg);
@@ -640,3 +1507,29 @@ const plugin = {
 
 export const OcAdvisorPluginV2 = plugin;
 export default plugin;
+
+// Named exports for unit tests (bun test). The plugin entrypoint is the
+// default export above.
+export {
+  ADVISOR_TRIGGERS,
+  CHECKPOINT_INSTRUCTION,
+  DEFAULT_ADVISOR_CONFIG,
+  TOOL_DESCRIPTION,
+  buildAdvisorPrompt,
+  checkAdvisorSupport,
+  classifyAdvisorError,
+  ensureAdvisorSession,
+  extractGeneratedText,
+  findAdvisorModel,
+  hasAdvisorConnection,
+  inferTrigger,
+  isFableModel,
+  isProviderUsable,
+  parseModelRef,
+  resolveAdvisorConfig,
+  resolveAdvisorVariant,
+  resetAdvisorSessionCache,
+  unwrapData,
+  withTimeout,
+};
+export type { AdvisorConfig, AdvisorOutcome, AdvisorTrigger, V2PluginContext };
