@@ -7,7 +7,7 @@
   "author": "P Foundation",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pfoundation/ocAdvisorTool.git"
+    "url": "https://github.com/pfoundation/ocAdvisorTool"
   },
   "homepage": "https://github.com/pfoundation/ocAdvisorTool#readme",
   "bugs": {
@@ -52,30 +52,5 @@
   "devDependencies": {
     "bun-types": "^1.4.2",
     "typescript": "^5.7.2"
-  },
-  "dependencies": {
-    "cross-spawn": "^7.0.6",
-    "detect-libc": "^2.1.2",
-    "effect": "^4.0.0-beta.83",
-    "fast-check": "^4.9.0",
-    "find-my-way-ts": "^0.1.6",
-    "ini": "^7.0.0",
-    "isexe": "^2.0.0",
-    "json-schema": "^0.4.0",
-    "kubernetes-types": "^1.30.0",
-    "msgpackr": "^2.0.5",
-    "msgpackr-extract": "^3.0.4",
-    "multipasta": "^0.2.8",
-    "node-gyp-build-optional-packages": "^5.2.2",
-    "path-key": "^3.1.1",
-    "pure-rand": "^8.4.2",
-    "shebang-command": "^2.0.0",
-    "shebang-regex": "^3.0.0",
-    "toml": "^4.3.0",
-    "undici-types": "^6.21.0",
-    "uuid": "^14.0.1",
-    "which": "^2.0.2",
-    "yaml": "^2.9.0",
-    "zod": "^4.1.8"
   }
 }
