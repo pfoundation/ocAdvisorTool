@@ -3,11 +3,40 @@
 OpenCode V2 plugin: consult Claude Fable as a senior advisor with your full
 session transcript (including parent sessions for subagents).
 
-Installed globally via symlink:
-`~/.config/opencode/plugin/ocAdvisor.ts` → `src/ocAdvisor.ts`.
+## Installation
 
 Requires OpenCode V2 with a configured connection for the advisor provider.
-The 1.x raw Anthropic HTTPS path (and its API-key handling) was removed in 2.0.
+
+```sh
+opencode plugin add @pfoundation/ocadvisor
+```
+
+This installs the latest release from npmjs.com. To pin a version:
+
+```sh
+opencode plugin add @pfoundation/ocadvisor@26.9.0
+```
+
+Manage the install with:
+
+```sh
+opencode plugin list            # show installed plugins
+opencode plugin update          # update all outdated plugins
+opencode plugin update @pfoundation/ocadvisor
+opencode plugin remove @pfoundation/ocadvisor
+```
+
+After installing, upgrading, or removing the plugin, restart the background
+service so the server loads the new code (`opencode service restart`).
+Location eviction does not reload plugin files.
+
+## Naming
+
+The tool agents call is named `advisor`. Repo/file names (`ocAdvisor`),
+the plugin id (`oc-advisor`), the metrics file
+(`ocAdvisor-metrics.jsonl`), and the `OCADVISOR_*` environment variables
+keep the old name for continuity; history counting, session discovery,
+and the usage report accept both `advisor` and the pre-rename `ocAdvisor`.
 
 ## Configuration
 
@@ -24,22 +53,21 @@ transcript cap.
 | `maxTranscriptChars` | `0` | Cap on transcript size (`0` = unlimited); the most recent tail is kept |
 
 Set them as plugin options in `opencode.json`. Because a plugin loaded from
-the auto-discovered `plugin/` directory cannot receive options, either list it
-explicitly in the `plugins` array (and remove the `plugin/ocAdvisor.ts`
-symlink to avoid a duplicate-ID load), or use the environment fallback below.
+the auto-discovered `plugin/` directory cannot receive options, list it
+explicitly in the `plugins` array:
 
 ```jsonc
 {
   "plugins": [
     {
-      "package": "/home/you/dev/ocAdvisor/src/ocAdvisor.ts",
+      "package": "@pfoundation/ocadvisor",
       "options": { "model": "anthropic/claude-opus-5#max", "maxTranscriptChars": 120000 }
     }
   ]
 }
 ```
 
-Environment variables work for any install, including the symlink, and take
+Environment variables work for any install and take
 lower precedence than plugin options: `OCADVISOR_MODEL` (accepts
 `provider/model#variant`), `OCADVISOR_PROVIDER`, `OCADVISOR_VARIANT`,
 `OCADVISOR_TIMEOUT_MS`, `OCADVISOR_MAX_TRANSCRIPT_CHARS`.
@@ -50,28 +78,36 @@ that self-consultation guard no longer matches it.
 
 ## Usage policy (what agents are told)
 
-On substantial, non-trivial work, consult `ocAdvisor` at three checkpoints:
+Use `advisor` selectively on substantial, non-trivial work. Straightforward
+tasks normally need no consultation.
 
-| Checkpoint | When | Mode / trigger |
-|---|---|---|
-| Before committing to an approach | Architectural decisions, cross-component changes, migrations, competing approaches with real tradeoffs | `plan` / `before_approach` |
-| When stuck | Same problem failing twice, contradictory evidence, recurring unexplained failure | `debug` / `stuck` |
-| Before declaring done | After code and checks are done; focused review of correctness, regressions, and cases tests do not establish | `review` / `pre_complete` |
+- Normally **at most one consultation per task**, at the point where a
+  second opinion has the most value — pick one stage, not all three:
+
+| Situation | Mode / trigger |
+|---|---|
+| Consequential unresolved design decision | `plan` / `before_approach` |
+| Blocker after two substantially different attempts | `debug` / `stuck` |
+| High-risk change with a specific unresolved correctness concern | `review` / `pre_complete` |
 
 Rules enforced by the tool description and an injected session instruction:
 
 - Always pass a concrete `question` naming the decision or artifact.
-- Typically 1–2 consultations per task; repeat only on material change or
-  new evidence (`followup` trigger to reconcile conflicts).
+- A second consultation requires material new evidence, a distinct
+  unresolved issue, or an explicit user request (`followup` trigger to
+  reconcile conflicts with primary-source evidence).
 - Give the advice serious weight; a passing self-test alone is not
-  counter-evidence.
+  counter-evidence. Clear factual corrections do not need another
+  confirmation call.
 - The tool is hidden in `anthropic/claude-fable-*` sessions (the current
   model is already Fable); calls there return a disabled notice.
 
 ## How it works
 
-- `src/ocAdvisor.ts` — the plugin. Registers the `ocAdvisor` tool, injects a
-  short checkpoint instruction into eligible sessions via the `context` hook,
+- `src/index.ts` → `dist/index.js` is the published entrypoint (default
+  export). `src/ocAdvisor.ts` holds the plugin implementation: it registers
+  the `advisor` tool, injects a
+  short selective-use instruction into eligible sessions via the `context` hook,
   and builds the transcript from the OpenCode SQLite database.
 - The tool is registered as a direct tool (`options.codemode: false`).
   OpenCode 2 otherwise exposes plugin tools only through the `execute` Code
@@ -81,18 +117,19 @@ Rules enforced by the tool description and an injected session instruction:
   `trigger`, and `question` fields followed by `output:` with the answer.
   Direct calls also avoid Code Mode's output-size truncation. The `context`
   hook can only hide the tool (Fable sessions), never add one, and the
-  checkpoint instruction is injected only when the tool is available to
+  selective-use instruction is injected only when the tool is available to
   the request.
 - Before each consultation it checks OpenCode for support of the configured
   advisor model: the provider is enabled (`catalog.provider.get`), the model
   is available (`catalog.model.list`, configured variant when listed), and a
   connection exists (`integration.connection.active`).
 - Consultations run as transient generations on a dedicated, reusable
-  `ocAdvisor` session pinned to the configured model (default
+  `advisor` session pinned to the configured model (default
   `anthropic/claude-fable-5-1#max`) via `session.create` +
   `session.switchModel` once, then `session.generate` per call. Transient
   generations do not mutate session history, so the advisor session stays
-  empty while its stats attribute advisor spend.
+  empty while its stats attribute advisor spend. Title discovery also
+  accepts the pre-rename `ocAdvisor` session title.
 - The generation timeout wraps only the model call, not the time a call
   spends queued behind another consultation. Oversized transcripts are
   capped to the configured `maxTranscriptChars` (keeping the recent tail)
@@ -123,21 +160,32 @@ Logging is best-effort and never breaks a call.
 
 ## Activation
 
-The server loads plugin files once per process, so after changing the
-plugin restart the background service (`opencode2 service restart`) or the
-old code keeps running. Location eviction does not reload plugin files.
+The server loads plugin files once per process, so after installing or
+updating the plugin restart the background service
+(`opencode service restart`) or the old code keeps running. Location
+eviction does not reload plugin files.
 
-## Evaluation
+## Development
 
 ```sh
+bun install           # install dependencies (frozen lockfile in CI)
 bun test              # unit tests
-tsc --noEmit          # typecheck (or: bun run typecheck)
-bun run report        # usage over the last 30 days
+bun run typecheck     # typecheck (tsc --noEmit)
+bun run build         # compile dist/ (runs automatically on npm pack/publish)
+bun run report        # advisor usage over the last 30 days
 bun src/usageReport.ts --days 7
 ```
+
+## Evaluation
 
 The report combines the metrics log with the session database and shows
 invocation counts by outcome/mode/trigger plus eligibility coverage
 (sessions with ≥10 non-Fable tool calls vs. sessions that consulted).
 Re-run it after a few weeks of the new checkpoints to judge coverage and
-whether advice is changing outcomes.
+whether advice is changing outcomes. The usage report is a maintainer tool
+run from a source checkout; it is not shipped in the npm package.
+
+## Versioning
+
+Releases use calendar versioning (`YY.M.patch`, e.g. `26.9.0`). The Git tag
+(`v26.9.0`) must match `package.json` exactly; tag pushes publish to npm.

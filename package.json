@@ -1,19 +1,81 @@
 {
-  "name": "oc-advisor",
-  "version": "2.0.0",
+  "name": "@pfoundation/ocadvisor",
+  "version": "26.9.0",
   "description": "OpenCode V2 plugin: consult Claude Fable 5.1 as senior advisor via OpenCode session generation",
   "type": "module",
-  "private": true,
   "license": "MIT",
+  "author": "P Foundation",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pfoundation/ocAdvisorTool.git"
+  },
+  "homepage": "https://github.com/pfoundation/ocAdvisorTool#readme",
+  "bugs": {
+    "url": "https://github.com/pfoundation/ocAdvisorTool/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "advisor",
+    "claude",
+    "ai",
+    "coding-agent"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "bun run build",
+    "prepublishOnly": "bun test && bun run typecheck",
     "report": "bun src/usageReport.ts --days 30"
   },
-  "dependencies": {
-    "@opencode-ai/plugin": "^1.18.18"
-  },
   "devDependencies": {
-    "bun-types": "^1.4.2"
+    "bun-types": "^1.4.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "cross-spawn": "^7.0.6",
+    "detect-libc": "^2.1.2",
+    "effect": "^4.0.0-beta.83",
+    "fast-check": "^4.9.0",
+    "find-my-way-ts": "^0.1.6",
+    "ini": "^7.0.0",
+    "isexe": "^2.0.0",
+    "json-schema": "^0.4.0",
+    "kubernetes-types": "^1.30.0",
+    "msgpackr": "^2.0.5",
+    "msgpackr-extract": "^3.0.4",
+    "multipasta": "^0.2.8",
+    "node-gyp-build-optional-packages": "^5.2.2",
+    "path-key": "^3.1.1",
+    "pure-rand": "^8.4.2",
+    "shebang-command": "^2.0.0",
+    "shebang-regex": "^3.0.0",
+    "toml": "^4.3.0",
+    "undici-types": "^6.21.0",
+    "uuid": "^14.0.1",
+    "which": "^2.0.2",
+    "yaml": "^2.9.0",
+    "zod": "^4.1.8"
   }
 }

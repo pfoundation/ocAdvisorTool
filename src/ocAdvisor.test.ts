@@ -12,6 +12,7 @@ import {
   findAdvisorModel,
   hasAdvisorConnection,
   inferTrigger,
+  isAdvisorToolName,
   isFableModel,
   isProviderUsable,
   parseModelRef,
@@ -272,7 +273,7 @@ describe("checkAdvisorSupport", () => {
 describe("ensureAdvisorSession", () => {
   const fableSession = {
     id: "ses_advisor1",
-    title: "ocAdvisor",
+    title: "advisor",
     model: { providerID: "anthropic", id: "claude-fable-5-1" },
   };
 
@@ -305,7 +306,7 @@ describe("ensureAdvisorSession", () => {
     await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
       "ses_created1",
     );
-    expect(calls).toContain('create:{"title":"ocAdvisor"}');
+    expect(calls).toContain('create:{"title":"advisor"}');
     expect(calls).toContain(
       'switch:{"sessionID":"ses_created1","model":{"providerID":"anthropic","id":"claude-fable-5-1","variant":"max"}}',
     );
@@ -357,28 +358,68 @@ describe("ensureAdvisorSession", () => {
     ]);
     resetAdvisorSessionCache();
   });
+
+  test("reuses a legacy-titled session from before the rename", async () => {
+    resetAdvisorSessionCache();
+    const calls: string[] = [];
+    const runtime: V2PluginContext = {
+      session: {
+        get: async () => {
+          throw new Error("not found");
+        },
+        list: async () => ({
+          data: [{ ...fableSession, title: "ocAdvisor" }],
+        }),
+        create: async () => {
+          calls.push("create");
+          return { data: { id: "ses_other" } };
+        },
+        switchModel: async () => {
+          calls.push("switch");
+        },
+      },
+      storage: { get: async () => null, set: async () => {} },
+    };
+    await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+      "ses_advisor1",
+    );
+    expect(calls).toEqual([]);
+    resetAdvisorSessionCache();
+  });
 });
 
 describe("checkpoint guidance", () => {
-  test("tool description names the three checkpoints", () => {
+  test("tool description names the modes and the one-call policy", () => {
     expect(TOOL_DESCRIPTION).toContain('"plan"');
     expect(TOOL_DESCRIPTION).toContain('"debug"');
     expect(TOOL_DESCRIPTION).toContain('"review"');
-    expect(TOOL_DESCRIPTION).toContain("BEFORE committing");
-    expect(TOOL_DESCRIPTION).toContain("WHEN STUCK");
-    expect(TOOL_DESCRIPTION).toContain("BEFORE declaring");
+    expect(TOOL_DESCRIPTION).toContain("AT MOST ONE");
     expect(TOOL_DESCRIPTION).toContain("followup");
+    expect(TOOL_DESCRIPTION).not.toContain("ocAdvisor");
   });
 
   test("injected instruction stays short", () => {
     expect(CHECKPOINT_INSTRUCTION.length).toBeLessThan(600);
-    expect(CHECKPOINT_INSTRUCTION).toContain("ocAdvisor");
+    expect(CHECKPOINT_INSTRUCTION).toContain("advisor");
     expect(CHECKPOINT_INSTRUCTION).toContain("review");
+    expect(CHECKPOINT_INSTRUCTION).not.toContain("ocAdvisor");
+  });
+});
+
+describe("isAdvisorToolName", () => {
+  test("matches the current and legacy tool names", () => {
+    expect(isAdvisorToolName("advisor")).toBe(true);
+    expect(isAdvisorToolName("ocAdvisor")).toBe(true);
+    expect(isAdvisorToolName("ocadvisor")).toBe(true);
+    expect(isAdvisorToolName("read")).toBe(false);
+    expect(isAdvisorToolName("execute")).toBe(false);
+    expect(isAdvisorToolName(null)).toBe(false);
+    expect(isAdvisorToolName(undefined)).toBe(false);
   });
 });
 
 describe("tool registration", () => {
-  test("registers ocAdvisor as a direct tool outside Code Mode", async () => {
+  test("registers advisor as a direct tool outside Code Mode", async () => {
     const added: Array<Record<string, unknown>> = [];
     const ctx: V2PluginContext = {
       tool: {
@@ -392,7 +433,7 @@ describe("tool registration", () => {
     };
     await setupOcAdvisorV2(ctx);
     expect(added).toHaveLength(1);
-    expect(added[0].name).toBe("ocAdvisor");
+    expect(added[0].name).toBe("advisor");
     // OpenCode 2 exposes a tool to the model directly only with
     // `codemode: false`; otherwise it is reachable only via `execute`,
     // whose tool log shows the call's input but never the answer.
@@ -422,13 +463,13 @@ describe("context hook", () => {
     const tool = { description: "x", input: {} };
     const event = {
       model: { providerID: "xai", id: "grok-4.6" },
-      tools: { ocAdvisor: tool } as Record<string, unknown>,
+      tools: { advisor: tool } as Record<string, unknown>,
       system: [{ type: "text", text: "base prompt" }],
     };
     handler(event);
     // The registered definition must survive untouched: OpenCode maps hook
     // entries back to registered tools and drops ones it cannot match.
-    expect(event.tools.ocAdvisor).toBe(tool);
+    expect(event.tools.advisor).toBe(tool);
     expect(event.system).toHaveLength(2);
     // The 2.0 server validates system parts as { type: "text", text };
     // a part without `type` fails the request schema and kills the session.
@@ -455,13 +496,14 @@ describe("context hook", () => {
     const handler = await captureHook();
     const event = {
       model: { providerID: "anthropic", id: "claude-fable-5-1" },
-      tools: { ocAdvisor: { description: "x", input: {} } } as Record<
-        string,
-        unknown
-      >,
+      tools: {
+        advisor: { description: "x", input: {} },
+        ocAdvisor: { description: "legacy", input: {} },
+      } as Record<string, unknown>,
       system: [{ type: "text", text: "base prompt" }],
     };
     handler(event);
+    expect(event.tools.advisor).toBeUndefined();
     expect(event.tools.ocAdvisor).toBeUndefined();
     expect(event.system).toHaveLength(1);
   });
@@ -532,8 +574,12 @@ describe("resolveAdvisorConfig", () => {
   });
 
   test("null or none variant disables the pin", () => {
-    expect(resolveAdvisorConfig({ variant: null }, noEnv).variant).toBeUndefined();
-    expect(resolveAdvisorConfig({ variant: "none" }, noEnv).variant).toBeUndefined();
+    expect(
+      resolveAdvisorConfig({ variant: null }, noEnv).variant,
+    ).toBeUndefined();
+    expect(
+      resolveAdvisorConfig({ variant: "none" }, noEnv).variant,
+    ).toBeUndefined();
   });
 
   test("clamps timeout and transcript overrides", () => {
@@ -567,7 +613,10 @@ describe("resolveAdvisorConfig", () => {
     expect(fromEnv.variant).toBe("xhigh");
     expect(fromEnv.timeoutMs).toBe(90000);
 
-    const overridden = resolveAdvisorConfig({ model: "openai/gpt-6-astra" }, env);
+    const overridden = resolveAdvisorConfig(
+      { model: "openai/gpt-6-astra" },
+      env,
+    );
     expect(overridden.provider).toBe("openai");
     expect(overridden.model).toBe("gpt-6-astra");
     // timeout still comes from env since options did not set it

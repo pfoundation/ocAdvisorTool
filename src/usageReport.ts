@@ -1,10 +1,11 @@
 /**
- * ocAdvisor usage report.
+ * advisor usage report.
  *
  * Combines the plugin metrics log
- * (~/.local/share/opencode/ocAdvisor-metrics.jsonl, written by new calls)
+ * (~/.local/share/opencode/ocAdvisor-metrics.jsonl, written by new calls;
+ * filename kept across the ocAdvisor → advisor rename)
  * with the OpenCode session database (all recorded history) to answer:
- * how often is ocAdvisor consulted, with what outcome, and how many
+ * how often is advisor consulted, with what outcome, and how many
  * eligible sessions never consult it?
  *
  * Run: bun src/usageReport.ts [--days N]
@@ -86,6 +87,28 @@ interface HistoryCall {
   outcome: "advisor_response" | "skipped_fable" | "error";
 }
 
+// Matches the current "advisor" tool name and the pre-rename "ocAdvisor" name.
+function isAdvisorToolName(name: unknown): boolean {
+  if (typeof name !== "string") return false;
+  const normalized = name.toLowerCase().replace(/[^a-z]/g, "");
+  return normalized === "advisor" || normalized === "ocadvisor";
+}
+
+function isDisabledNotice(output: string): boolean {
+  return (
+    output.startsWith("advisor is disabled") ||
+    output.startsWith("ocAdvisor is disabled")
+  );
+}
+
+function isFailureFooter(output: string): boolean {
+  return (
+    /^Error calling (Opus )?advisor:/.test(output) ||
+    output.startsWith("advisor failed") ||
+    output.startsWith("ocAdvisor failed")
+  );
+}
+
 function queryHistory(
   db: Database,
   startMs: number,
@@ -96,7 +119,7 @@ function queryHistory(
   const seen = new Set<string>();
   const rows = db
     .query<{ id: string; session_id: string; data: string }, [number, number]>(
-      "SELECT id, session_id, data FROM session_message WHERE type = 'assistant' AND time_created >= ? AND time_created < ? AND data LIKE '%ocAdvisor%'",
+      "SELECT id, session_id, data FROM session_message WHERE type = 'assistant' AND time_created >= ? AND time_created < ? AND data LIKE '%advisor%'",
     )
     .all(startMs, endMs);
   for (const row of rows) {
@@ -112,26 +135,22 @@ function queryHistory(
       const name = String(block.name || block.tool || "");
       const state = block.state || {};
       const nested = state.metadata?.toolCalls || [];
-      const matches: Array<{ input: any }> =
-        name.toLowerCase() === "ocadvisor"
-          ? [{ input: state.input }]
-          : nested
-              .map((call: any, index: number) => ({ call, index }))
-              .filter(
-                ({ call }: { call: any }) =>
-                  String(call.tool || call.name || "").toLowerCase() ===
-                  "ocadvisor",
-              )
-              .map(({ call }: { call: any }) => ({ input: call.input }));
+      const matches: Array<{ input: any }> = isAdvisorToolName(name)
+        ? [{ input: state.input }]
+        : nested
+            .map((call: any, index: number) => ({ call, index }))
+            .filter(({ call }: { call: any }) =>
+              isAdvisorToolName(call.tool || call.name),
+            )
+            .map(({ call }: { call: any }) => ({ input: call.input }));
       if (matches.length === 0) continue;
       const output = (state.content || [])
         .filter((item: any) => item && item.type === "text")
         .map((item: any) => item.text || "")
         .join("\n");
-      const outcome = output.startsWith("ocAdvisor is disabled")
+      const outcome = isDisabledNotice(output)
         ? "skipped_fable"
-        : /^Error calling (Opus )?advisor:/.test(output) ||
-            output.startsWith("ocAdvisor failed")
+        : isFailureFooter(output)
           ? "error"
           : "advisor_response";
       const stamp = block.time?.ran || block.time?.created || startMs;
@@ -244,7 +263,7 @@ async function main(): Promise<void> {
     );
     const eligibility = queryEligibility(db, startMs, endMs, consulted);
 
-    console.log(`# ocAdvisor usage — last ${days} days`);
+    console.log(`# advisor usage — last ${days} days`);
     console.log(`Window: ${startIso} → ${endIso}\n`);
 
     console.log("## Recorded invocations (session database)");

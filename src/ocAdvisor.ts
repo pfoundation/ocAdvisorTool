@@ -1,4 +1,3 @@
-import type { Plugin } from "@opencode-ai/plugin";
 import { Database } from "bun:sqlite";
 import { appendFile } from "fs/promises";
 import { homedir } from "os";
@@ -12,11 +11,14 @@ const METRICS_PATH = join(
 const ADVISOR_PROVIDER = "anthropic";
 const ADVISOR_MODEL = "claude-fable-5-1";
 const ADVISOR_VARIANT = "max";
-const ADVISOR_SESSION_TITLE = "ocAdvisor";
+const ADVISOR_SESSION_TITLE = "advisor";
+// Sessions created before the ocAdvisor → advisor rename keep working: title
+// discovery accepts both, and the storage key below is unchanged.
+const LEGACY_ADVISOR_SESSION_TITLE = "ocAdvisor";
 const ADVISOR_STORAGE_KEY = "advisorSessionID";
 const ADVISOR_TIMEOUT_MS = 300_000;
 const FABLE_DISABLED =
-  "ocAdvisor is disabled for anthropic/claude-fable-* sessions — the current model is already Fable.";
+  "advisor is disabled for anthropic/claude-fable-* sessions — the current model is already Fable.";
 
 // The advisor model is configurable via plugin options in opencode.json
 // (`{ "package": "...", "options": { "model": "anthropic/claude-fable-5-1#max" } }`)
@@ -57,10 +59,7 @@ function normalizeVariant(value: unknown): string | undefined {
   return text;
 }
 
-function toBoundedInt(
-  value: unknown,
-  min: number,
-): number | undefined {
+function toBoundedInt(value: unknown, min: number): number | undefined {
   const raw =
     typeof value === "number"
       ? value
@@ -171,23 +170,20 @@ You are a debugger. Analyze error patterns, stack traces, and failed attempts in
 
 const TOOL_DESCRIPTION = `Consult a senior advisor model with your full session transcript — including parent sessions for subagents — for high-quality analysis.
 
-Use ocAdvisor as a checkpoint on substantial, non-trivial work:
+Use advisor selectively on substantial, non-trivial work. Straightforward tasks normally need no consultation.
 
-- mode "plan": BEFORE committing to an approach — architectural decisions, cross-component changes, migrations, or competing approaches with real tradeoffs.
-- mode "debug": WHEN STUCK — the same problem failing twice, contradictory evidence, or a recurring unexplained failure.
-- mode "review": BEFORE declaring substantial implementation complete — after code and checks are done, ask for a focused review of correctness, regressions, and cases your tests do not establish.
+- Normally make AT MOST ONE consultation per task, at the point where a second opinion has the most value: a consequential unresolved design decision (mode "plan"), a blocker after two substantially different attempts (mode "debug"), or a high-risk change with a specific unresolved correctness concern (mode "review"). Pick one stage, not all three.
 - mode "general": a second opinion that does not fit the above.
 
 Rules:
 - Always pass a concrete "question" naming the decision or artifact under review.
-- Typically 1-2 consultations per task: once before the approach crystallizes, once before declaring done. Consult again only on material change or new evidence.
-- Give the advice serious weight. A passing self-test alone is not counter-evidence; primary-source evidence (the file says X) is.
-- If the advisor conflicts with evidence you already retrieved, reconcile with one "followup" call stating both sides.
+- A second consultation requires material new evidence, a distinct unresolved issue, or an explicit user request. Reconcile an advisor conflict with primary-source evidence via one "followup" call stating both sides.
+- Give the advice serious weight. A passing self-test alone is not counter-evidence; primary-source evidence (the file says X) is. Clear factual corrections do not need another confirmation call.
 
 Args: "mode" (general, review, plan, debug), "trigger" (before_approach, stuck, pre_complete, followup, other), "question" (concrete question focusing the advisor).
 `;
 
-const CHECKPOINT_INSTRUCTION = `[ocAdvisor checkpoint] On substantial, non-trivial work: consult ocAdvisor mode "plan" before committing to an approach, mode "debug" when stuck (2+ failed attempts or contradictory evidence), and mode "review" before declaring implementation complete. Always pass a concrete question. Typically 1-2 consultations per task; repeat only on material change or new evidence. Give the advice serious weight.`;
+const CHECKPOINT_INSTRUCTION = `[advisor] Use advisor selectively on substantial work: normally 0-1 consultations per task, at most one unless material new evidence, a distinct unresolved issue, or an explicit user request. Consult for a consequential undecided design (mode "plan"), a blocker after 2+ different attempts (mode "debug"), or a high-risk change with a specific correctness concern (mode "review"). Always pass a concrete question.`;
 
 const ADVISOR_TRIGGERS = [
   "before_approach",
@@ -224,7 +220,7 @@ interface AdvisorMetrics {
   via: string;
 }
 
-const OCADVISOR_INPUT_SCHEMA = {
+const ADVISOR_INPUT_SCHEMA = {
   type: "object",
   properties: {
     mode: {
@@ -478,6 +474,15 @@ function isTerminalToolStatus(status: unknown): boolean {
   return status === "completed" || status === "error";
 }
 
+// Matches the current "advisor" tool name and the pre-rename "ocAdvisor"
+// name so history counting and the context hook keep working across the
+// rename. Normalization mirrors the hook: lowercase, letters only.
+function isAdvisorToolName(name: unknown): boolean {
+  if (typeof name !== "string") return false;
+  const normalized = name.toLowerCase().replace(/[^a-z]/g, "");
+  return normalized === "advisor" || normalized === "ocadvisor";
+}
+
 function countPriorAdvisorCalls(
   db: InstanceType<typeof Database>,
   sessionId: string,
@@ -506,7 +511,7 @@ function countPriorAdvisorCalls(
             const state = block.state || {};
             if (!isTerminalToolStatus(state.status)) continue;
             const nested = state.metadata?.toolCalls || [];
-            if (name.toLowerCase() === "ocadvisor") {
+            if (isAdvisorToolName(name)) {
               const cid = String(block.id || block.callID || row.id);
               if (!callIds.has(cid)) {
                 callIds.add(cid);
@@ -514,10 +519,7 @@ function countPriorAdvisorCalls(
               }
             }
             nested.forEach((call: Record<string, any>, index: number) => {
-              if (
-                String(call.tool || call.name || "").toLowerCase() ===
-                "ocadvisor"
-              ) {
+              if (isAdvisorToolName(call.tool || call.name)) {
                 const cid = `${block.id || row.id}#${index}`;
                 if (!callIds.has(cid)) {
                   callIds.add(cid);
@@ -542,7 +544,7 @@ function countPriorAdvisorCalls(
             continue;
           }
           const name = String(block.tool || block.name || "");
-          if (name.toLowerCase() !== "ocadvisor") continue;
+          if (!isAdvisorToolName(name)) continue;
           if (!isTerminalToolStatus(block.state?.status)) continue;
           const cid = String(block.callID || block.id || "");
           if (!cid || callIds.has(cid)) continue;
@@ -980,8 +982,7 @@ async function checkAdvisorSupport(
   if (typeof runtime.integration?.connection?.active === "function") {
     let connection: unknown = null;
     try {
-      connection =
-        await runtime.integration.connection.active(config.provider);
+      connection = await runtime.integration.connection.active(config.provider);
     } catch (err) {
       return {
         supported: false,
@@ -1128,7 +1129,9 @@ async function ensureAdvisorSession(
     try {
       const sessions = readSessionList(await runtime.session.list());
       const existing = sessions.find(
-        (session) => session.title === ADVISOR_SESSION_TITLE,
+        (session) =>
+          session.title === ADVISOR_SESSION_TITLE ||
+          session.title === LEGACY_ADVISOR_SESSION_TITLE,
       );
       const existingId = typeof existing?.id === "string" ? existing.id : null;
       if (existing && existingId) {
@@ -1177,7 +1180,7 @@ async function callAdvisor(opts: {
   const config = opts.config ?? DEFAULT_ADVISOR_CONFIG;
   if (typeof runtime?.session?.generate !== "function") {
     throw new Error(
-      "ocAdvisor requires the OpenCode V2 plugin runtime (session.generate unavailable).",
+      "advisor requires the OpenCode V2 plugin runtime (session.generate unavailable).",
     );
   }
 
@@ -1222,7 +1225,7 @@ async function callAdvisor(opts: {
     ? `${config.provider}/${config.model} (effort=${support.variant})`
     : `${config.provider}/${config.model}`;
   return {
-    text: `${text}\n\n---\n_ocAdvisor via OpenCode: ${modelLabel} (token usage unavailable via session generation)_`,
+    text: `${text}\n\n---\n_advisor via OpenCode: ${modelLabel} (token usage unavailable via session generation)_`,
     inputTokens: null,
     outputTokens: null,
   };
@@ -1266,7 +1269,7 @@ async function runAdvisor(opts: {
       via: "opencode-session",
     });
     throw new Error(
-      "ocAdvisor requires a valid OpenCode session context (no session ID available).",
+      "advisor requires a valid OpenCode session context (no session ID available).",
     );
   }
 
@@ -1298,7 +1301,7 @@ async function runAdvisor(opts: {
         via: "opencode-session",
       });
       console.log(
-        `[ocAdvisor] session=${sessionId} mode=${mode} outcome=skipped_fable (already Fable)`,
+        `[advisor] session=${sessionId} mode=${mode} outcome=skipped_fable (already Fable)`,
       );
       return FABLE_DISABLED;
     }
@@ -1340,7 +1343,7 @@ async function runAdvisor(opts: {
     const prior = countPriorAdvisorCalls(db, sessionId);
     const priorNote =
       prior.count > 0
-        ? `Note: this session chain already has ${prior.count} recorded ocAdvisor consultation(s) (modes: ${prior.modes.join(", ") || "unknown"}). Focus on what is new since then; do not repeat settled advice unless new evidence changes it.`
+        ? `Note: this session chain already has ${prior.count} recorded advisor consultation(s) (modes: ${prior.modes.join(", ") || "unknown"}). Focus on what is new since then; do not repeat settled advice unless new evidence changes it.`
         : null;
 
     const systemPrompt = SYSTEM_PROMPTS[mode] || SYSTEM_PROMPTS.general;
@@ -1374,11 +1377,11 @@ async function runAdvisor(opts: {
         via: "opencode-session",
       });
       console.log(
-        `[ocAdvisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=advisor_response latencyMs=${latencyMs}`,
+        `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=advisor_response latencyMs=${latencyMs}`,
       );
       return (
         result.text +
-        `\n\n_ocAdvisor consultation #${prior.count + 1} in this session chain (trigger=${trigger})_`
+        `\n\n_advisor consultation #${prior.count + 1} in this session chain (trigger=${trigger})_`
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1403,21 +1406,14 @@ async function runAdvisor(opts: {
         via: "opencode-session",
       });
       console.log(
-        `[ocAdvisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=error errorType=${errorType} latencyMs=${latencyMs}`,
+        `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=error errorType=${errorType} latencyMs=${latencyMs}`,
       );
-      throw new Error(`ocAdvisor failed (${errorType}): ${message}`);
+      throw new Error(`advisor failed (${errorType}): ${message}`);
     }
   } finally {
     db?.close();
   }
 }
-
-export const OcAdvisorPlugin: Plugin = async () => {
-  // ocAdvisor requires the OpenCode V2 runtime (session-scoped generation
-  // with the configured Anthropic connection). The V1 raw-Anthropic path was
-  // removed in 2.0, so V1 runtimes get no tool rather than a broken one.
-  return {};
-};
 
 export async function setupOcAdvisorV2(
   ctx: V2PluginContext,
@@ -1431,9 +1427,9 @@ export async function setupOcAdvisorV2(
     const reg = await ctx.tool.transform(
       (draft: { add: (tool: unknown) => void }) => {
         draft.add({
-          name: "ocAdvisor",
+          name: "advisor",
           description: TOOL_DESCRIPTION,
-          input: OCADVISOR_INPUT_SCHEMA,
+          input: ADVISOR_INPUT_SCHEMA,
           // Register as a direct tool, not a Code Mode tool. OpenCode 2 only
           // exposes tools with `codemode: false` to the model directly; every
           // other tool is reachable solely through `execute`, whose tool log
@@ -1488,7 +1484,7 @@ export async function setupOcAdvisorV2(
         // actually available, e.g. not when a permission rule removed it.
         let available = false;
         for (const key of Object.keys(event.tools)) {
-          if (key.toLowerCase().replace(/[^a-z]/g, "") !== "ocadvisor") {
+          if (!isAdvisorToolName(key)) {
             continue;
           }
           if (isFableModel(event.model)) {
@@ -1514,9 +1510,10 @@ export async function setupOcAdvisorV2(
 }
 
 const plugin = {
+  // Plugin id intentionally unchanged by the ocAdvisor → advisor rename:
+  // plugin storage (the pinned advisor session id) is scoped to it.
   id: "oc-advisor",
   setup: setupOcAdvisorV2,
-  server: OcAdvisorPlugin,
 };
 
 export const OcAdvisorPluginV2 = plugin;
@@ -1537,6 +1534,7 @@ export {
   findAdvisorModel,
   hasAdvisorConnection,
   inferTrigger,
+  isAdvisorToolName,
   isFableModel,
   isProviderUsable,
   parseModelRef,
