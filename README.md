@@ -189,3 +189,13 @@ run from a source checkout; it is not shipped in the npm package.
 
 Releases use calendar versioning (`YY.M.patch`, e.g. `26.9.0`). The Git tag
 (`v26.9.0`) must match `package.json` exactly; tag pushes publish to npm.
+
+## Releasing (maintainers)
+
+1. Bump `version` in `package.json` (CalVer `YY.M.patch`), commit, push to
+   `master`, and wait for CI to pass.
+2. Tag and push: `git tag -a vYY.M.patch -m "@pfoundation/ocadvisor vYY.M.patch" && git push origin vYY.M.patch`
+3. The `publish` workflow validates the tag, re-runs every gate, and
+   publishes via OIDC trusted publishing (no npm token). `v*` tag creation
+   is restricted to maintainers by a ruleset.
+4. Verify: `npm view @pfoundation/ocadvisor@YY.M.patch`.
