@@ -28,6 +28,7 @@ interface MetricsRow {
   callerModel?: string | null;
   mode?: string;
   trigger?: string;
+  effort?: string | null;
   outcome?: string;
   errorType?: string | null;
   latencyMs?: number;
@@ -294,6 +295,9 @@ async function main(): Promise<void> {
       );
       console.log(
         `- By trigger: ${JSON.stringify(countBy(metrics, (row) => row.trigger || "unknown"))}`,
+      );
+      console.log(
+        `- By effort: ${JSON.stringify(countBy(metrics, (row) => row.effort || "unset"))}`,
       );
       console.log(`- Median latency: ${median(latencies) ?? "n/a"} ms`);
       if (inputTokens.length === 0) {

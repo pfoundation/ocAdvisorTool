@@ -4,7 +4,9 @@ import {
   CHECKPOINT_INSTRUCTION,
   DEFAULT_ADVISOR_CONFIG,
   TOOL_DESCRIPTION,
+  buildAdvisorInputSchema,
   buildAdvisorPrompt,
+  buildToolDescription,
   checkAdvisorSupport,
   classifyAdvisorError,
   ensureAdvisorSession,
@@ -18,6 +20,7 @@ import {
   parseModelRef,
   resolveAdvisorConfig,
   resolveAdvisorVariant,
+  resolveRequestedEffort,
   setupOcAdvisorV2,
   resetAdvisorSessionCache,
   unwrapData,
@@ -109,6 +112,17 @@ describe("classifyAdvisorError", () => {
     ).toBe("auth");
   });
 
+  test("classifies invalid effort requests", () => {
+    expect(
+      classifyAdvisorError('Effort "low" is not allowed (allowed: high, max).'),
+    ).toBe("invalid_effort");
+    expect(
+      classifyAdvisorError(
+        'Effort "xhigh" is not a variant of anthropic/claude-fable-5-1 (available: high, max).',
+      ),
+    ).toBe("invalid_effort");
+  });
+
   test("defaults to api_error", () => {
     expect(classifyAdvisorError("Anthropic API error 500: overloaded")).toBe(
       "api_error",
@@ -177,6 +191,33 @@ describe("support helpers", () => {
     expect(
       resolveAdvisorVariant({ variants: [{ id: "high" }] }),
     ).toBeUndefined();
+  });
+
+  test("resolveAdvisorVariant honors a requested effort", () => {
+    const model = { variants: [{ id: "high" }, { id: "max" }] };
+    expect(resolveAdvisorVariant(model, DEFAULT_ADVISOR_CONFIG, "high")).toBe(
+      "high",
+    );
+    // Without catalog data the request cannot be validated, so it passes
+    // through to switchModel.
+    expect(resolveAdvisorVariant(null, DEFAULT_ADVISOR_CONFIG, "xhigh")).toBe(
+      "xhigh",
+    );
+    expect(resolveAdvisorVariant({}, DEFAULT_ADVISOR_CONFIG, "xhigh")).toBe(
+      "xhigh",
+    );
+  });
+
+  test("resolveAdvisorVariant rejects a requested effort the model lacks", () => {
+    expect(() =>
+      resolveAdvisorVariant(
+        { variants: [{ id: "max" }] },
+        DEFAULT_ADVISOR_CONFIG,
+        "xhigh",
+      ),
+    ).toThrow(
+      'Effort "xhigh" is not a variant of anthropic/claude-fable-5-1 (available: max).',
+    );
   });
 
   test("hasAdvisorConnection requires a configured connection", () => {
@@ -266,6 +307,36 @@ describe("checkAdvisorSupport", () => {
     await expect(checkAdvisorSupport({})).resolves.toEqual({
       supported: true,
       variant: "max",
+    });
+  });
+
+  test("honors a requested effort listed by the catalog", async () => {
+    const runtime: V2PluginContext = {
+      catalog: {
+        provider: { get: async () => ({ data: { activation: "enabled" } }) },
+        model: {
+          list: async () => ({
+            data: [
+              { ...fableModel, variants: [{ id: "high" }, { id: "max" }] },
+            ],
+          }),
+        },
+      },
+      integration: {
+        connection: { active: async () => ({ type: "credential", id: "c1" }) },
+      },
+    };
+    await expect(
+      checkAdvisorSupport(runtime, DEFAULT_ADVISOR_CONFIG, "high"),
+    ).resolves.toEqual({ supported: true, variant: "high" });
+  });
+
+  test("rejects a requested effort the catalog lacks", async () => {
+    const result = await checkAdvisorSupport(healthy(), undefined, "xhigh");
+    expect(result).toEqual({
+      supported: false,
+      reason:
+        'Effort "xhigh" is not a variant of anthropic/claude-fable-5-1 (available: max).',
     });
   });
 });
@@ -384,6 +455,80 @@ describe("ensureAdvisorSession", () => {
       "ses_advisor1",
     );
     expect(calls).toEqual([]);
+    resetAdvisorSessionCache();
+  });
+
+  test("repins a reused session when the requested effort changes", async () => {
+    resetAdvisorSessionCache();
+    const calls: string[] = [];
+    const runtime: V2PluginContext = {
+      session: {
+        get: async () => ({
+          data: {
+            ...fableSession,
+            id: "ses_effort1",
+            model: {
+              providerID: "anthropic",
+              id: "claude-fable-5-1",
+              variant: "max",
+            },
+          },
+        }),
+        switchModel: async (input: unknown) => {
+          calls.push(`switch:${JSON.stringify(input)}`);
+        },
+      },
+      storage: { get: async () => "ses_effort1", set: async () => {} },
+    };
+    await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+      "ses_effort1",
+    );
+    expect(calls).toEqual([]);
+    await expect(ensureAdvisorSession(runtime, "high")).resolves.toBe(
+      "ses_effort1",
+    );
+    expect(calls).toEqual([
+      'switch:{"sessionID":"ses_effort1","model":{"providerID":"anthropic","id":"claude-fable-5-1","variant":"high"}}',
+    ]);
+    resetAdvisorSessionCache();
+  });
+
+  test("falls back to the last pinned variant when the payload omits it", async () => {
+    resetAdvisorSessionCache();
+    const calls: string[] = [];
+    let reported: Record<string, string> = {
+      providerID: "anthropic",
+      id: "claude-fable-5-1",
+      variant: "max",
+    };
+    const runtime: V2PluginContext = {
+      session: {
+        get: async () => ({
+          data: { ...fableSession, id: "ses_effort2", model: reported },
+        }),
+        switchModel: async (input: unknown) => {
+          calls.push(`switch:${JSON.stringify(input)}`);
+        },
+      },
+      storage: { get: async () => "ses_effort2", set: async () => {} },
+    };
+    // The reported variant seeds the cache without a switch.
+    await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+      "ses_effort2",
+    );
+    expect(calls).toEqual([]);
+    // Payloads that omit the variant compare against the cached pin.
+    reported = { providerID: "anthropic", id: "claude-fable-5-1" };
+    await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+      "ses_effort2",
+    );
+    expect(calls).toEqual([]);
+    await expect(ensureAdvisorSession(runtime, "high")).resolves.toBe(
+      "ses_effort2",
+    );
+    expect(calls).toEqual([
+      'switch:{"sessionID":"ses_effort2","model":{"providerID":"anthropic","id":"claude-fable-5-1","variant":"high"}}',
+    ]);
     resetAdvisorSessionCache();
   });
 });
@@ -622,6 +767,138 @@ describe("resolveAdvisorConfig", () => {
     // timeout still comes from env since options did not set it
     expect(overridden.timeoutMs).toBe(90000);
   });
+
+  test("agentEffort defaults to disabled", () => {
+    expect(resolveAdvisorConfig(undefined, noEnv).agentEffort).toBeNull();
+  });
+
+  test("agentEffort true enables the default levels", () => {
+    expect(
+      resolveAdvisorConfig({ agentEffort: true }, noEnv).agentEffort,
+    ).toEqual(["high", "xhigh", "max"]);
+  });
+
+  test("agentEffort false, null, or none disables the feature", () => {
+    expect(
+      resolveAdvisorConfig({ agentEffort: false }, noEnv).agentEffort,
+    ).toBeNull();
+    expect(
+      resolveAdvisorConfig({ agentEffort: null }, noEnv).agentEffort,
+    ).toBeNull();
+    expect(
+      resolveAdvisorConfig({ agentEffort: "none" }, noEnv).agentEffort,
+    ).toBeNull();
+  });
+
+  test("agentEffort accepts an explicit list or comma string", () => {
+    expect(
+      resolveAdvisorConfig({ agentEffort: ["high", "max"] }, noEnv).agentEffort,
+    ).toEqual(["high", "max"]);
+    expect(
+      resolveAdvisorConfig({ agentEffort: "high, xhigh" }, noEnv).agentEffort,
+    ).toEqual(["high", "xhigh"]);
+    expect(
+      resolveAdvisorConfig({ agent_effort: "high" }, noEnv).agentEffort,
+    ).toEqual(["high"]);
+  });
+
+  test("agentEffort trims, dedupes, and drops empties", () => {
+    expect(
+      resolveAdvisorConfig(
+        { agentEffort: [" high ", "", "high", "max"] },
+        noEnv,
+      ).agentEffort,
+    ).toEqual(["high", "max"]);
+  });
+
+  test("agentEffort reads from the environment with options winning", () => {
+    expect(
+      resolveAdvisorConfig(undefined, { OCADVISOR_AGENT_EFFORT: "true" })
+        .agentEffort,
+    ).toEqual(["high", "xhigh", "max"]);
+    expect(
+      resolveAdvisorConfig(
+        { agentEffort: false },
+        { OCADVISOR_AGENT_EFFORT: "true" },
+      ).agentEffort,
+    ).toBeNull();
+  });
+});
+
+describe("resolveRequestedEffort", () => {
+  const effortConfig: AdvisorConfig = {
+    ...DEFAULT_ADVISOR_CONFIG,
+    agentEffort: ["high", "xhigh", "max"],
+  };
+
+  test("passes allowed efforts through", () => {
+    expect(resolveRequestedEffort(effortConfig, "high")).toBe("high");
+    expect(resolveRequestedEffort(effortConfig, " xhigh ")).toBe("xhigh");
+  });
+
+  test("treats missing or blank effort as omitted", () => {
+    expect(resolveRequestedEffort(effortConfig, undefined)).toBeUndefined();
+    expect(resolveRequestedEffort(effortConfig, null)).toBeUndefined();
+    expect(resolveRequestedEffort(effortConfig, "  ")).toBeUndefined();
+  });
+
+  test("rejects efforts outside the allow-list", () => {
+    expect(() => resolveRequestedEffort(effortConfig, "low")).toThrow(
+      'Effort "low" is not allowed (allowed: high, xhigh, max).',
+    );
+  });
+
+  test("ignores effort when the feature is disabled", () => {
+    expect(
+      resolveRequestedEffort(DEFAULT_ADVISOR_CONFIG, "high"),
+    ).toBeUndefined();
+  });
+});
+
+describe("agent effort tool surface", () => {
+  test("hides effort when disabled", () => {
+    const schema = buildAdvisorInputSchema(DEFAULT_ADVISOR_CONFIG) as {
+      properties: Record<string, unknown>;
+    };
+    expect("effort" in schema.properties).toBe(false);
+    expect(buildToolDescription(DEFAULT_ADVISOR_CONFIG)).toBe(TOOL_DESCRIPTION);
+  });
+
+  test("advertises the allowed efforts when enabled", () => {
+    const config: AdvisorConfig = {
+      ...DEFAULT_ADVISOR_CONFIG,
+      agentEffort: ["high", "max"],
+    };
+    const schema = buildAdvisorInputSchema(config) as {
+      properties: Record<string, { enum?: string[] }>;
+    };
+    expect(schema.properties.effort.enum).toEqual(["high", "max"]);
+    const description = buildToolDescription(config);
+    expect(description).toContain('"effort"');
+    expect(description).toContain("high, max");
+  });
+
+  test("registration uses the configured tool surface", async () => {
+    const added: Array<Record<string, unknown>> = [];
+    const ctx = {
+      options: { agentEffort: true },
+      tool: {
+        transform: async (
+          fn: (draft: { add: (tool: unknown) => void }) => void,
+        ) => {
+          fn({ add: (tool) => added.push(tool as Record<string, unknown>) });
+          return { dispose: () => {} };
+        },
+      },
+    } as unknown as V2PluginContext;
+    await setupOcAdvisorV2(ctx);
+    expect(added).toHaveLength(1);
+    const input = added[0].input as {
+      properties: Record<string, unknown>;
+    };
+    expect("effort" in input.properties).toBe(true);
+    expect(String(added[0].description)).toContain('"effort"');
+  });
 });
 
 describe("model helpers honor a custom config", () => {
@@ -631,6 +908,7 @@ describe("model helpers honor a custom config", () => {
     variant: "high",
     timeoutMs: 300000,
     maxTranscriptChars: 0,
+    agentEffort: null,
   };
 
   test("findAdvisorModel matches the configured model", () => {

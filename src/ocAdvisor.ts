@@ -17,6 +17,9 @@ const ADVISOR_SESSION_TITLE = "advisor";
 const LEGACY_ADVISOR_SESSION_TITLE = "ocAdvisor";
 const ADVISOR_STORAGE_KEY = "advisorSessionID";
 const ADVISOR_TIMEOUT_MS = 300_000;
+// Effort levels the agent may request per call when `agentEffort: true`
+// (subset of the model's catalog variants; validated per consultation).
+const AGENT_EFFORT_DEFAULTS = ["high", "xhigh", "max"];
 const FABLE_DISABLED =
   "advisor is disabled for anthropic/claude-fable-* sessions — the current model is already Fable.";
 
@@ -24,7 +27,8 @@ const FABLE_DISABLED =
 // (`{ "package": "...", "options": { "model": "anthropic/claude-fable-5-1#max" } }`)
 // or, for symlink/auto-discovered installs that cannot receive options,
 // via environment variables (OCADVISOR_MODEL, OCADVISOR_PROVIDER,
-// OCADVISOR_VARIANT, OCADVISOR_TIMEOUT_MS, OCADVISOR_MAX_TRANSCRIPT_CHARS).
+// OCADVISOR_VARIANT, OCADVISOR_TIMEOUT_MS, OCADVISOR_MAX_TRANSCRIPT_CHARS,
+// OCADVISOR_AGENT_EFFORT).
 // Defaults preserve the original behavior: anthropic/claude-fable-5-1#max.
 interface AdvisorConfig {
   provider: string;
@@ -32,6 +36,7 @@ interface AdvisorConfig {
   variant: string | undefined;
   timeoutMs: number;
   maxTranscriptChars: number;
+  agentEffort: string[] | null;
 }
 
 const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = {
@@ -40,6 +45,7 @@ const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = {
   variant: ADVISOR_VARIANT,
   timeoutMs: ADVISOR_TIMEOUT_MS,
   maxTranscriptChars: 0,
+  agentEffort: null,
 };
 
 interface AdvisorConfigSource {
@@ -50,6 +56,8 @@ interface AdvisorConfigSource {
   timeout_ms?: unknown;
   maxTranscriptChars?: unknown;
   max_transcript_chars?: unknown;
+  agentEffort?: unknown;
+  agent_effort?: unknown;
 }
 
 function normalizeVariant(value: unknown): string | undefined {
@@ -57,6 +65,41 @@ function normalizeVariant(value: unknown): string | undefined {
   const text = String(value).trim();
   if (!text || text.toLowerCase() === "none") return undefined;
   return text;
+}
+
+function dedupeEfforts(items: string[]): string[] | null {
+  const seen = new Set<string>();
+  for (const item of items) {
+    const text = item.trim();
+    if (text) seen.add(text);
+  }
+  return seen.size > 0 ? [...seen] : null;
+}
+
+// `true` enables the default levels, `false`/`null` disables the feature,
+// and an array or comma-separated string sets an explicit allow-list.
+// Returns undefined for unrecognized types so the caller keeps the base.
+function normalizeAgentEffort(value: unknown): string[] | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (value === true) return [...AGENT_EFFORT_DEFAULTS];
+  if (value === false) return null;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text) return null;
+    const lowered = text.toLowerCase();
+    if (lowered === "true") return [...AGENT_EFFORT_DEFAULTS];
+    if (lowered === "false" || lowered === "none") return null;
+    return dedupeEfforts(text.split(","));
+  }
+  if (Array.isArray(value)) {
+    return dedupeEfforts(
+      value
+        .filter((entry): entry is string => typeof entry === "string")
+        .flatMap((entry) => entry.split(",")),
+    );
+  }
+  return undefined;
 }
 
 function toBoundedInt(value: unknown, min: number): number | undefined {
@@ -118,6 +161,11 @@ function applyAdvisorConfigSource(
   if (src.variant !== undefined) {
     next.variant = normalizeVariant(src.variant);
   }
+  const agentEffort = src.agentEffort ?? src.agent_effort;
+  if (agentEffort !== undefined) {
+    const normalized = normalizeAgentEffort(agentEffort);
+    if (normalized !== undefined) next.agentEffort = normalized;
+  }
   const timeout = toBoundedInt(src.timeoutMs ?? src.timeout_ms, 1);
   if (timeout !== undefined) next.timeoutMs = timeout;
   const cap = toBoundedInt(
@@ -137,6 +185,7 @@ function envAdvisorConfigSource(
     variant: env.OCADVISOR_VARIANT,
     timeoutMs: env.OCADVISOR_TIMEOUT_MS,
     maxTranscriptChars: env.OCADVISOR_MAX_TRANSCRIPT_CHARS,
+    agentEffort: env.OCADVISOR_AGENT_EFFORT,
   };
 }
 
@@ -183,6 +232,20 @@ Rules:
 Args: "mode" (general, review, plan, debug), "trigger" (before_approach, stuck, pre_complete, followup, other), "question" (concrete question focusing the advisor).
 `;
 
+// When `agentEffort` is enabled the tool advertises an optional `effort`
+// argument; otherwise the description is exactly TOOL_DESCRIPTION.
+function buildToolDescription(
+  config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
+): string {
+  if (!config.agentEffort || config.agentEffort.length === 0) {
+    return TOOL_DESCRIPTION;
+  }
+  return (
+    TOOL_DESCRIPTION +
+    `Optional "effort" (one of: ${config.agentEffort.join(", ")}): reasoning effort for this consultation; omit to use the configured variant.\n`
+  );
+}
+
 const CHECKPOINT_INSTRUCTION = `[advisor] Use advisor selectively on substantial work: normally 0-1 consultations per task, at most one unless material new evidence, a distinct unresolved issue, or an explicit user request. Consult for a consequential undecided design (mode "plan"), a blocker after 2+ different attempts (mode "debug"), or a high-risk change with a specific correctness concern (mode "review"). Always pass a concrete question.`;
 
 const ADVISOR_TRIGGERS = [
@@ -210,6 +273,7 @@ interface AdvisorMetrics {
   mode: string;
   trigger: AdvisorTrigger;
   questionChars: number;
+  effort: string | null;
   outcome: AdvisorOutcome;
   errorType: string | null;
   latencyMs: number;
@@ -241,6 +305,28 @@ const ADVISOR_INPUT_SCHEMA = {
     },
   },
 };
+
+// When `agentEffort` is enabled the schema gains an optional `effort`
+// argument restricted to the allowed levels.
+function buildAdvisorInputSchema(
+  config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
+) {
+  if (!config.agentEffort || config.agentEffort.length === 0) {
+    return ADVISOR_INPUT_SCHEMA;
+  }
+  return {
+    ...ADVISOR_INPUT_SCHEMA,
+    properties: {
+      ...ADVISOR_INPUT_SCHEMA.properties,
+      effort: {
+        type: "string",
+        enum: [...config.agentEffort],
+        description:
+          "Reasoning effort for this consultation (omit to use the configured variant)",
+      },
+    },
+  };
+}
 
 interface SessionRow {
   id: string;
@@ -357,6 +443,26 @@ function inferTrigger(
   }
 }
 
+// Validates a per-call effort request against the plugin's allow-list.
+// Returns undefined when the agent omitted it or the feature is disabled
+// (a stray value is ignored then, since the schema never advertised it).
+function resolveRequestedEffort(
+  config: AdvisorConfig,
+  value: unknown,
+): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const text = String(value).trim();
+  if (!text) return undefined;
+  const allowed = config.agentEffort;
+  if (!allowed || allowed.length === 0) return undefined;
+  if (!allowed.includes(text)) {
+    throw new Error(
+      `Effort "${text}" is not allowed (allowed: ${allowed.join(", ")}).`,
+    );
+  }
+  return text;
+}
+
 function classifyAdvisorError(message: string): string {
   const text = message.toLowerCase();
   if (
@@ -367,6 +473,9 @@ function classifyAdvisorError(message: string): string {
   }
   if (text.includes("rate_limit") || text.includes(" 429")) {
     return "rate_limit";
+  }
+  if (text.includes("not a variant of") || text.includes("is not allowed")) {
+    return "invalid_effort";
   }
   if (
     text.includes("failed to parse json") ||
@@ -906,7 +1015,22 @@ function findAdvisorModel(
 function resolveAdvisorVariant(
   model: CatalogModelRef | null | undefined,
   config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
+  requestedVariant?: string,
 ): string | undefined {
+  // An agent-requested effort must be a real variant of the model; unlike
+  // the configured default it never silently falls back.
+  if (requestedVariant !== undefined) {
+    if (!model || !Array.isArray(model.variants)) return requestedVariant;
+    const ids = model.variants.map((variant) => variant?.id);
+    if (!ids.includes(requestedVariant)) {
+      const available =
+        ids.filter((id): id is string => !!id).join(", ") || "none";
+      throw new Error(
+        `Effort "${requestedVariant}" is not a variant of ${config.provider}/${config.model} (available: ${available}).`,
+      );
+    }
+    return requestedVariant;
+  }
   if (config.variant === undefined) return undefined;
   if (!model || !Array.isArray(model.variants)) return config.variant;
   const ids = model.variants.map((variant) => variant?.id);
@@ -932,6 +1056,7 @@ type AdvisorSupport =
 async function checkAdvisorSupport(
   runtime: V2PluginContext,
   config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
+  requestedVariant?: string,
 ): Promise<AdvisorSupport> {
   if (typeof runtime.catalog?.provider?.get === "function") {
     let provider: { activation?: string } | null = null;
@@ -955,7 +1080,7 @@ async function checkAdvisorSupport(
     }
   }
 
-  let variant: string | undefined = config.variant;
+  let variant: string | undefined = requestedVariant ?? config.variant;
   if (typeof runtime.catalog?.model?.list === "function") {
     let models: CatalogModelRef[] | null = null;
     try {
@@ -976,7 +1101,14 @@ async function checkAdvisorSupport(
         reason: `Model unavailable: ${config.provider}/${config.model}`,
       };
     }
-    variant = resolveAdvisorVariant(model, config);
+    try {
+      variant = resolveAdvisorVariant(model, config, requestedVariant);
+    } catch (err) {
+      return {
+        supported: false,
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   if (typeof runtime.integration?.connection?.active === "function") {
@@ -1001,10 +1133,16 @@ async function checkAdvisorSupport(
 }
 
 let cachedAdvisorSessionId: string | null = null;
+// Last variant pinned by this process (tri-state: unknown until a session
+// is pinned or reports its variant).
+let cachedAdvisorVariant: string | undefined;
+let cachedAdvisorVariantKnown = false;
 let advisorQueue: Promise<unknown> = Promise.resolve();
 
 function resetAdvisorSessionCache(): void {
   cachedAdvisorSessionId = null;
+  cachedAdvisorVariant = undefined;
+  cachedAdvisorVariantKnown = false;
 }
 
 function enqueueAdvisor<T>(task: () => Promise<T>): Promise<T> {
@@ -1072,18 +1210,55 @@ async function getAdvisorSession(
 
 function advisorSessionNeedsModel(
   session: Record<string, unknown> | null,
+  variant: string | undefined,
+  allowCacheFallback: boolean,
   config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
 ): boolean {
   if (!session) return true;
   const model = session.model as
-    { providerID?: string; id?: string; modelID?: string } | undefined;
+    | {
+        providerID?: string;
+        id?: string;
+        modelID?: string;
+        variant?: string;
+      }
+    | undefined;
   if (!model || typeof model !== "object") return true;
   const provider = String(model.providerID || "").toLowerCase();
   const id = String(model.id || model.modelID || "").toLowerCase();
-  return (
+  if (
     provider !== config.provider.toLowerCase() ||
     id !== config.model.toLowerCase()
-  );
+  ) {
+    return true;
+  }
+  // Re-pin when the requested effort differs from the session's variant. The
+  // session payload may not report a variant; then fall back to the last
+  // pinned value — but only for the session it was pinned on.
+  if (typeof model.variant === "string" && model.variant) {
+    return model.variant !== variant;
+  }
+  if (allowCacheFallback && cachedAdvisorVariantKnown) {
+    return cachedAdvisorVariant !== variant;
+  }
+  return false;
+}
+
+// Records the variant a reused session reports so later requests for a
+// different effort re-pin even when a future payload omits it.
+function syncCachedAdvisorVariant(
+  session: Record<string, unknown> | null,
+): void {
+  const model = (session as { model?: { variant?: unknown } } | null)?.model;
+  if (
+    model &&
+    typeof model === "object" &&
+    typeof model.variant === "string" &&
+    model.variant
+  ) {
+    cachedAdvisorVariant = model.variant;
+    cachedAdvisorVariantKnown = true;
+  }
 }
 
 async function switchAdvisorSessionModel(
@@ -1118,8 +1293,19 @@ async function ensureAdvisorSession(
     if (!candidate) continue;
     const session = await getAdvisorSession(runtime, candidate);
     if (!session) continue;
-    if (advisorSessionNeedsModel(session, config)) {
+    if (
+      advisorSessionNeedsModel(
+        session,
+        variant,
+        candidate === cachedAdvisorSessionId,
+        config,
+      )
+    ) {
       await switchAdvisorSessionModel(runtime, candidate, variant, config);
+      cachedAdvisorVariant = variant;
+      cachedAdvisorVariantKnown = true;
+    } else {
+      syncCachedAdvisorVariant(session);
     }
     cachedAdvisorSessionId = candidate;
     return candidate;
@@ -1135,8 +1321,19 @@ async function ensureAdvisorSession(
       );
       const existingId = typeof existing?.id === "string" ? existing.id : null;
       if (existing && existingId) {
-        if (advisorSessionNeedsModel(existing, config)) {
+        if (
+          advisorSessionNeedsModel(
+            existing,
+            variant,
+            existingId === cachedAdvisorSessionId,
+            config,
+          )
+        ) {
           await switchAdvisorSessionModel(runtime, existingId, variant, config);
+          cachedAdvisorVariant = variant;
+          cachedAdvisorVariantKnown = true;
+        } else {
+          syncCachedAdvisorVariant(existing);
         }
         cachedAdvisorSessionId = existingId;
         await storeAdvisorSessionId(runtime, existingId);
@@ -1159,6 +1356,8 @@ async function ensureAdvisorSession(
   }
   await switchAdvisorSessionModel(runtime, sessionId, variant, config);
   cachedAdvisorSessionId = sessionId;
+  cachedAdvisorVariant = variant;
+  cachedAdvisorVariantKnown = true;
   await storeAdvisorSessionId(runtime, sessionId);
   return sessionId;
 }
@@ -1169,12 +1368,14 @@ async function callAdvisor(opts: {
   transcript: string;
   question: string | undefined;
   priorNote: string | null;
+  effort?: string;
   signal?: AbortSignal;
   config?: AdvisorConfig;
 }): Promise<{
   text: string;
   inputTokens: null;
   outputTokens: null;
+  variant: string | undefined;
 }> {
   const runtime = opts.runtime;
   const config = opts.config ?? DEFAULT_ADVISOR_CONFIG;
@@ -1184,7 +1385,7 @@ async function callAdvisor(opts: {
     );
   }
 
-  const support = await checkAdvisorSupport(runtime, config);
+  const support = await checkAdvisorSupport(runtime, config, opts.effort);
   if (!support.supported) {
     throw new Error(support.reason);
   }
@@ -1228,6 +1429,7 @@ async function callAdvisor(opts: {
     text: `${text}\n\n---\n_advisor via OpenCode: ${modelLabel} (token usage unavailable via session generation)_`,
     inputTokens: null,
     outputTokens: null,
+    variant: support.variant,
   };
 }
 
@@ -1237,6 +1439,7 @@ async function runAdvisor(opts: {
   mode?: string;
   trigger?: string;
   question?: string;
+  effort?: unknown;
   signal?: AbortSignal;
   callerAgent?: string;
   callerDirectory?: string;
@@ -1259,6 +1462,7 @@ async function runAdvisor(opts: {
       mode,
       trigger,
       questionChars,
+      effort: null,
       outcome: "no_session",
       errorType: "no_session",
       latencyMs: Date.now() - started,
@@ -1291,6 +1495,7 @@ async function runAdvisor(opts: {
         mode,
         trigger,
         questionChars,
+        effort: null,
         outcome: "skipped_fable",
         errorType: null,
         latencyMs: Date.now() - started,
@@ -1317,6 +1522,7 @@ async function runAdvisor(opts: {
         mode,
         trigger,
         questionChars,
+        effort: null,
         outcome: "no_transcript",
         errorType: "no_transcript",
         latencyMs: Date.now() - started,
@@ -1347,13 +1553,16 @@ async function runAdvisor(opts: {
         : null;
 
     const systemPrompt = SYSTEM_PROMPTS[mode] || SYSTEM_PROMPTS.general;
+    let requestedEffort: string | undefined;
     try {
+      requestedEffort = resolveRequestedEffort(config, opts.effort);
       const result = await callAdvisor({
         runtime: opts.runtime,
         systemPrompt,
         transcript,
         question: opts.question,
         priorNote,
+        effort: requestedEffort,
         signal: opts.signal,
         config,
       });
@@ -1367,6 +1576,7 @@ async function runAdvisor(opts: {
         mode,
         trigger,
         questionChars,
+        effort: result.variant ?? null,
         outcome: "advisor_response",
         errorType: null,
         latencyMs,
@@ -1396,6 +1606,7 @@ async function runAdvisor(opts: {
         mode,
         trigger,
         questionChars,
+        effort: requestedEffort ?? null,
         outcome: "error",
         errorType,
         latencyMs,
@@ -1428,8 +1639,8 @@ export async function setupOcAdvisorV2(
       (draft: { add: (tool: unknown) => void }) => {
         draft.add({
           name: "advisor",
-          description: TOOL_DESCRIPTION,
-          input: ADVISOR_INPUT_SCHEMA,
+          description: buildToolDescription(advisorConfig),
+          input: buildAdvisorInputSchema(advisorConfig),
           // Register as a direct tool, not a Code Mode tool. OpenCode 2 only
           // exposes tools with `codemode: false` to the model directly; every
           // other tool is reachable solely through `execute`, whose tool log
@@ -1440,7 +1651,12 @@ export async function setupOcAdvisorV2(
           // avoids Code Mode's output-size truncation.
           options: { codemode: false },
           async execute(
-            input: { mode?: string; trigger?: string; question?: string },
+            input: {
+              mode?: string;
+              trigger?: string;
+              question?: string;
+              effort?: string;
+            },
             context: {
               sessionID?: string;
               sessionId?: string;
@@ -1455,6 +1671,7 @@ export async function setupOcAdvisorV2(
               mode: input?.mode,
               trigger: input?.trigger,
               question: input?.question,
+              effort: input?.effort,
               signal: context.abort,
               callerAgent: context.agent,
               callerDirectory: context.directory,
@@ -1526,7 +1743,9 @@ export {
   CHECKPOINT_INSTRUCTION,
   DEFAULT_ADVISOR_CONFIG,
   TOOL_DESCRIPTION,
+  buildAdvisorInputSchema,
   buildAdvisorPrompt,
+  buildToolDescription,
   checkAdvisorSupport,
   classifyAdvisorError,
   ensureAdvisorSession,
@@ -1540,6 +1759,7 @@ export {
   parseModelRef,
   resolveAdvisorConfig,
   resolveAdvisorVariant,
+  resolveRequestedEffort,
   resetAdvisorSessionCache,
   unwrapData,
   withTimeout,
