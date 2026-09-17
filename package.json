@@ -7,7 +7,7 @@
   "author": "P Foundation",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pfoundation/ocAdvisorTool"
+    "url": "git+https://github.com/pfoundation/ocAdvisorTool.git"
   },
   "homepage": "https://github.com/pfoundation/ocAdvisorTool#readme",
   "bugs": {

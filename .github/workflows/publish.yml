@@ -26,11 +26,13 @@ jobs:
           # Pinned to match local dev; bump together with bun.lock.
           bun-version: 1.3.8
 
-      # No registry-url: no private deps to install, and publish authenticates
-      # via OIDC (a NODE_AUTH_TOKEN fallback must not shadow it).
+      # registry-url is required for npm OIDC trusted publishing (per npm
+      # docs and the working oc2Usage setup); no NODE_AUTH_TOKEN is set, so
+      # `npm publish` authenticates via the OIDC token exchange.
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
+          registry-url: "https://registry.npmjs.org"
 
       - name: Check npm supports trusted publishing
         run: |
