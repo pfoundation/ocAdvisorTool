@@ -10,7 +10,7 @@ const METRICS_PATH = join(
 );
 const ADVISOR_PROVIDER = "anthropic";
 const ADVISOR_MODEL = "claude-fable-5-1";
-const ADVISOR_VARIANT = "max";
+const ADVISOR_VARIANT = "xhigh";
 const ADVISOR_SESSION_TITLE = "advisor";
 // Sessions created before the ocAdvisor → advisor rename keep working: title
 // discovery accepts both, and the storage key below is unchanged.
@@ -24,12 +24,12 @@ const FABLE_DISABLED =
   "advisor is disabled for anthropic/claude-fable-* sessions — the current model is already Fable.";
 
 // The advisor model is configurable via plugin options in opencode.json
-// (`{ "package": "...", "options": { "model": "anthropic/claude-fable-5-1#max" } }`)
+// (`{ "package": "...", "options": { "model": "anthropic/claude-fable-5-1#xhigh" } }`)
 // or, for symlink/auto-discovered installs that cannot receive options,
 // via environment variables (OCADVISOR_MODEL, OCADVISOR_PROVIDER,
 // OCADVISOR_VARIANT, OCADVISOR_TIMEOUT_MS, OCADVISOR_MAX_TRANSCRIPT_CHARS,
 // OCADVISOR_AGENT_EFFORT).
-// Defaults preserve the original behavior: anthropic/claude-fable-5-1#max.
+// Defaults preserve the original behavior: anthropic/claude-fable-5-1#xhigh.
 interface AdvisorConfig {
   provider: string;
   model: string;
