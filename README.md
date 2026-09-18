@@ -41,14 +41,14 @@ and the usage report accept both `advisor` and the pre-rename `ocAdvisor`.
 ## Configuration
 
 The advisor model and limits are configurable. Defaults are unchanged:
-`anthropic/claude-fable-5-1#max`, a 300 s generation timeout, and no
+`anthropic/claude-fable-5-1#xhigh`, a 300 s generation timeout, and no
 transcript cap.
 
 | Option | Default | Meaning |
 |---|---|---|
 | `model` | `claude-fable-5-1` | Model id, or a full `provider/model#variant` reference |
 | `provider` | `anthropic` | Provider id (overrides the provider in `model`) |
-| `variant` | `max` | Reasoning-effort variant; `null` or `"none"` pins no variant |
+| `variant` | `xhigh` | Reasoning-effort variant; `null` or `"none"` pins no variant |
 | `timeoutMs` | `300000` | Per-consultation generation timeout, in milliseconds |
 | `maxTranscriptChars` | `0` | Cap on transcript size (`0` = unlimited); the most recent tail is kept |
 | `agentEffort` | `false` | Let the agent pick effort per call: `true` allows `high`, `xhigh`, `max`; an array or comma string sets an explicit allow-list |
@@ -148,7 +148,7 @@ Rules enforced by the tool description and an injected session instruction:
   connection exists (`integration.connection.active`).
 - Consultations run as transient generations on a dedicated, reusable
   `advisor` session pinned to the configured model (default
-  `anthropic/claude-fable-5-1#max`) via `session.create` +
+  `anthropic/claude-fable-5-1#xhigh`) via `session.create` +
   `session.switchModel` once, then `session.generate` per call. Transient
   generations do not mutate session history, so the advisor session stays
   empty while its stats attribute advisor spend. Title discovery also

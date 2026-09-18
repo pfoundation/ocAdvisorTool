@@ -184,10 +184,12 @@ describe("support helpers", () => {
     expect(findAdvisorModel(null)).toBeNull();
   });
 
-  test("resolveAdvisorVariant prefers max when listed", () => {
-    expect(resolveAdvisorVariant(null)).toBe("max");
-    expect(resolveAdvisorVariant({})).toBe("max");
-    expect(resolveAdvisorVariant({ variants: [{ id: "max" }] })).toBe("max");
+  test("resolveAdvisorVariant prefers xhigh when listed", () => {
+    expect(resolveAdvisorVariant(null)).toBe("xhigh");
+    expect(resolveAdvisorVariant({})).toBe("xhigh");
+    expect(resolveAdvisorVariant({ variants: [{ id: "xhigh" }] })).toBe(
+      "xhigh",
+    );
     expect(
       resolveAdvisorVariant({ variants: [{ id: "high" }] }),
     ).toBeUndefined();
@@ -258,7 +260,7 @@ describe("checkAdvisorSupport", () => {
     providerID: "anthropic",
     id: "claude-fable-5-1",
     enabled: true,
-    variants: [{ id: "max" }],
+    variants: [{ id: "xhigh" }],
   };
   const healthy = (): V2PluginContext => ({
     catalog: {
@@ -273,7 +275,7 @@ describe("checkAdvisorSupport", () => {
   test("supports generation when provider, model, and connection exist", async () => {
     await expect(checkAdvisorSupport(healthy())).resolves.toEqual({
       supported: true,
-      variant: "max",
+      variant: "xhigh",
     });
   });
 
@@ -306,7 +308,7 @@ describe("checkAdvisorSupport", () => {
   test("skips checks the runtime does not offer", async () => {
     await expect(checkAdvisorSupport({})).resolves.toEqual({
       supported: true,
-      variant: "max",
+      variant: "xhigh",
     });
   });
 
@@ -332,11 +334,11 @@ describe("checkAdvisorSupport", () => {
   });
 
   test("rejects a requested effort the catalog lacks", async () => {
-    const result = await checkAdvisorSupport(healthy(), undefined, "xhigh");
+    const result = await checkAdvisorSupport(healthy(), undefined, "max");
     expect(result).toEqual({
       supported: false,
       reason:
-        'Effort "xhigh" is not a variant of anthropic/claude-fable-5-1 (available: max).',
+        'Effort "max" is not a variant of anthropic/claude-fable-5-1 (available: xhigh).',
     });
   });
 });
@@ -682,7 +684,7 @@ describe("parseModelRef", () => {
 describe("resolveAdvisorConfig", () => {
   const noEnv: Record<string, string | undefined> = {};
 
-  test("defaults to anthropic/claude-fable-5-1#max", () => {
+  test("defaults to anthropic/claude-fable-5-1#xhigh", () => {
     expect(resolveAdvisorConfig(undefined, noEnv)).toEqual(
       DEFAULT_ADVISOR_CONFIG,
     );
