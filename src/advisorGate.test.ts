@@ -17,6 +17,7 @@ import {
   type GateClient,
   type SystemOneCall,
 } from "./typesafeGate";
+import type { AdvisorProfile, RequesterProfile } from "./modelProfiles";
 import { TYPESAFE_DEFAULTS } from "./typesafeState";
 
 let dir: string;
@@ -29,7 +30,7 @@ function writeFixtureDb(): void {
     "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, model TEXT, agent TEXT, directory TEXT)",
   );
   db.run(
-    "CREATE TABLE session_message (session_id TEXT, type TEXT, seq INTEGER, data TEXT)",
+    "CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, seq INTEGER, data TEXT)",
   );
   db.query(
     "INSERT INTO session_v2 (id, parent_id, title, model, agent, directory) VALUES (?,?,?,?,?,?)",
@@ -107,6 +108,8 @@ function runtimeWith(options: {
   generate?: (request: Record<string, unknown>) => Promise<unknown>;
   agentEffort?: string[] | null;
   variant?: string | undefined;
+  omitCatalog?: boolean;
+  v2ModelList?: Array<Record<string, unknown>>;
 }): {
   runtime: V2PluginContext;
   generated: Array<Record<string, unknown>>;
@@ -186,6 +189,16 @@ function runtimeWith(options: {
       },
     },
   } as unknown as V2PluginContext;
+  if (options.omitCatalog) delete runtime.catalog;
+  if (options.v2ModelList !== undefined) {
+    const models = options.v2ModelList;
+    runtime.model = {
+      list: async () => {
+        counts.modelList++;
+        return { data: models };
+      },
+    };
+  }
   return { runtime, generated, counts };
 }
 
@@ -675,5 +688,295 @@ describe("runAdvisor with the TypeSafe gate", () => {
       "skipped_model",
       "advisor_response",
     ]);
+  });
+});
+
+describe("runAdvisor resolves model profiles", () => {
+  function insertAssistantMessage(row: {
+    id: string;
+    sessionId: string;
+    seq: number;
+    model: Record<string, unknown>;
+    toolBlocks?: Array<{ id: string; name: string }>;
+  }): void {
+    const db = new Database(dbPath);
+    db.query(
+      "INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?,?,?,?,?)",
+    ).run(
+      row.id,
+      row.sessionId,
+      "assistant",
+      row.seq,
+      JSON.stringify({
+        agent: "build",
+        model: row.model,
+        content: (row.toolBlocks ?? []).map((block) => ({
+          type: "tool",
+          id: block.id,
+          name: block.name,
+          state: { status: "running", input: {} },
+        })),
+      }),
+    );
+    db.close();
+  }
+
+  function captureProfiles(runtime: V2PluginContext): Array<{
+    requester: RequesterProfile;
+    advisor: AdvisorProfile;
+  }> {
+    const seen: Array<{
+      requester: RequesterProfile;
+      advisor: AdvisorProfile;
+    }> = [];
+    runtime.__advisorTest!.profileSink = (profiles) => {
+      seen.push(profiles);
+    };
+    return seen;
+  }
+
+  test("correlates the requester to the originating message", async () => {
+    insertAssistantMessage({
+      id: "msg_req",
+      sessionId: "ses_fixture",
+      seq: 10,
+      model: { providerID: "openai", id: "gpt-6-astra", variant: "xhigh" },
+      toolBlocks: [{ id: "call_req", name: "advisor" }],
+    });
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      callerMessageID: "msg_req",
+      callerCallID: "call_req",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.requester).toEqual({
+      providerID: "openai",
+      modelID: "gpt-6-astra",
+      variant: "xhigh",
+      provenance: "invocation_message",
+    });
+  });
+
+  test("falls back to the latest message without identifiers", async () => {
+    insertAssistantMessage({
+      id: "msg_latest",
+      sessionId: "ses_fixture",
+      seq: 10,
+      model: { providerID: "test", id: "latest-model", variant: "high" },
+    });
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.requester).toEqual({
+      providerID: "test",
+      modelID: "latest-model",
+      variant: "high",
+      provenance: "latest_message",
+    });
+  });
+
+  test("isolates subagent requesters from parents", async () => {
+    insertChildSession("ses_child", "ses_fixture", {
+      providerID: "meta",
+      id: "muse-spark-1.3",
+    });
+    insertAssistantMessage({
+      id: "msg_child",
+      sessionId: "ses_child",
+      seq: 2,
+      model: { providerID: "test", id: "child-model", variant: "max" },
+    });
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_child",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.requester.modelID).toBe("child-model");
+    expect(seen[0]?.requester.provenance).toBe("latest_message");
+  });
+
+  test("pins an explicit caller effort over candidates", async () => {
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      effort: "max",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.advisor).toEqual({
+      providerID: "anthropic",
+      modelID: "claude-fable-5-1",
+      policy: { kind: "pinned", effort: "max" },
+    });
+  });
+
+  test("exposes gate candidates with a validated fallback", async () => {
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.advisor.policy).toEqual({
+      kind: "candidates",
+      candidates: ["high", "xhigh", "max"],
+      fallback: "xhigh",
+    });
+  });
+
+  test("fixes the effort when selection is unavailable", async () => {
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig({ agentEffort: null }),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.advisor.policy).toEqual({
+      kind: "fixed",
+      effort: "xhigh",
+    });
+  });
+
+  test("keeps guards on the session model ahead of profiles", async () => {
+    setSessionModel("ses_fixture", {
+      providerID: "anthropic",
+      id: "claude-fable-9",
+    });
+    insertAssistantMessage({
+      id: "msg_other",
+      sessionId: "ses_fixture",
+      seq: 10,
+      model: { providerID: "openai", id: "gpt-6-astra" },
+    });
+    const { client, calls } = stubGate(gateResponse(0.9));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    const result = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      callerMessageID: "msg_other",
+      config: baseConfig(),
+    });
+
+    expect(result).toContain("already Fable");
+    expect(calls).toHaveLength(0);
+    expect(seen).toHaveLength(0);
+  });
+
+  test("prefers V2 model discovery with validated defaults", async () => {
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime, counts } = runtimeWith({
+      gateClient: client,
+      omitCatalog: true,
+      v2ModelList: [
+        {
+          providerID: "anthropic",
+          id: "claude-fable-5-1",
+          enabled: true,
+          variants: [{ id: "high" }, { id: "max" }],
+        },
+      ],
+    });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig(),
+    });
+
+    expect(counts.modelList).toBe(1);
+    expect(seen).toHaveLength(1);
+    // xhigh is neither a candidate nor the fallback: discovery says the
+    // configured default is unsupported.
+    expect(seen[0]?.advisor.policy).toEqual({
+      kind: "candidates",
+      candidates: ["high", "max"],
+      fallback: null,
+    });
+  });
+
+  test("prefers V2 discovery over catalog when both exist", async () => {
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({
+      gateClient: client,
+      v2ModelList: [
+        {
+          providerID: "anthropic",
+          id: "claude-fable-5-1",
+          enabled: true,
+          variants: [{ id: "max" }],
+        },
+      ],
+    });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.advisor.policy).toEqual({
+      kind: "candidates",
+      candidates: ["max"],
+      fallback: null,
+    });
   });
 });

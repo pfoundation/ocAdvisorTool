@@ -4,6 +4,12 @@ import { homedir } from "os";
 import { isAbsolute, join } from "path";
 import type { BenchmarkPathOptions } from "./benchmarkConfig.js";
 import {
+  resolveAdvisorProfile,
+  resolveRequesterProfile,
+  type AdvisorProfile,
+  type RequesterProfile,
+} from "./modelProfiles.js";
+import {
   runTypeSafeGate,
   type GateClient,
   type GateDecision,
@@ -510,6 +516,7 @@ interface SessionModel {
   modelID?: string;
   providerID?: string;
   provider?: string;
+  variant?: string;
 }
 
 interface SessionInfo {
@@ -533,6 +540,10 @@ interface V2PluginContext {
     provider?: { get?: Function; list?: Function };
     model?: { list?: Function };
   };
+  // Documented V2 discovery domains; preferred over the legacy catalog
+  // namespace above when both exist.
+  model?: { list?: Function };
+  provider?: { get?: Function; list?: Function };
   integration?: { connection?: { active?: Function } };
   storage?: { get?: Function; set?: Function };
   // Test seam: inject a gate client and environment without touching the
@@ -544,6 +555,10 @@ interface V2PluginContext {
     gateFetch?: typeof fetch;
     dbPath?: string;
     metricsPath?: string;
+    profileSink?: (profiles: {
+      requester: RequesterProfile;
+      advisor: AdvisorProfile;
+    }) => void;
   };
 }
 
@@ -1351,17 +1366,51 @@ function hasAdvisorConnection(connection: unknown): boolean {
   return true;
 }
 
+// Discovery namespaces: the documented V2 `model`/`provider` domains win,
+// the legacy `catalog` namespace stays for older servers and fixtures.
+// Calls stay in method form so any receiver-bound implementation keeps
+// working.
+function discoveryModelApi(
+  runtime: V2PluginContext,
+): { list: Function } | null {
+  if (runtime.model && typeof runtime.model.list === "function") {
+    return runtime.model as { list: Function };
+  }
+  if (
+    runtime.catalog?.model &&
+    typeof runtime.catalog.model.list === "function"
+  ) {
+    return runtime.catalog.model as { list: Function };
+  }
+  return null;
+}
+
+function discoveryProviderApi(
+  runtime: V2PluginContext,
+): { get: Function } | null {
+  if (runtime.provider && typeof runtime.provider.get === "function") {
+    return runtime.provider as { get: Function };
+  }
+  if (
+    runtime.catalog?.provider &&
+    typeof runtime.catalog.provider.get === "function"
+  ) {
+    return runtime.catalog.provider as { get: Function };
+  }
+  return null;
+}
+
 // Shared by support checks and the effort gate; null means discovery is
 // unavailable or the configured model was not found.
 async function findAdvisorCatalogModel(
   runtime: V2PluginContext,
   config: AdvisorConfig,
 ): Promise<CatalogModelRef | null> {
-  if (typeof runtime.catalog?.model?.list !== "function") return null;
+  const api = discoveryModelApi(runtime);
+  if (!api) return null;
   try {
     const models = unwrapData(
-      (await runtime.catalog.model.list()) as
-        CatalogModelRef[] | { data: CatalogModelRef[] },
+      (await api.list()) as CatalogModelRef[] | { data: CatalogModelRef[] },
     );
     return findAdvisorModel(models, config);
   } catch {
@@ -1378,11 +1427,12 @@ async function checkAdvisorSupport(
   config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
   requestedVariant?: string,
 ): Promise<AdvisorSupport> {
-  if (typeof runtime.catalog?.provider?.get === "function") {
+  const providerApi = discoveryProviderApi(runtime);
+  if (providerApi) {
     let provider: { activation?: string } | null = null;
     try {
       provider = unwrapData(
-        (await runtime.catalog.provider.get({
+        (await providerApi.get({
           providerID: config.provider,
         })) as { activation?: string } | { data: { activation?: string } },
       );
@@ -1401,11 +1451,12 @@ async function checkAdvisorSupport(
   }
 
   let variant: string | undefined = requestedVariant ?? config.variant;
-  if (typeof runtime.catalog?.model?.list === "function") {
+  const modelApi = discoveryModelApi(runtime);
+  if (modelApi) {
     let models: CatalogModelRef[] | null = null;
     try {
       models = unwrapData(
-        (await runtime.catalog.model.list()) as
+        (await modelApi.list()) as
           CatalogModelRef[] | { data: CatalogModelRef[] },
       );
     } catch (err) {
@@ -1780,6 +1831,8 @@ async function runAdvisor(opts: {
   signal?: AbortSignal;
   callerAgent?: string;
   callerDirectory?: string;
+  callerMessageID?: string;
+  callerCallID?: string;
   config?: AdvisorConfig;
 }): Promise<string> {
   const started = Date.now();
@@ -1884,6 +1937,16 @@ async function runAdvisor(opts: {
         transcript.slice(-config.maxTranscriptChars);
     }
 
+    // Invocation-correct requester identity for benchmark matching: the
+    // model that produced this tool call, resolved after the early guards
+    // so skipped calls pay for no extra reads.
+    const requesterProfile = resolveRequesterProfile(db, {
+      sessionId,
+      messageID: opts.callerMessageID,
+      callID: opts.callerCallID,
+      sessionModel: info?.model ?? null,
+    });
+
     const prior = countPriorAdvisorCalls(db, sessionId);
     const priorNote =
       prior.count > 0
@@ -1902,12 +1965,23 @@ async function runAdvisor(opts: {
       // did not pin an effort, which supported effort fits. Gate failures
       // fall back to the ordinary behavior and never fail the call.
       let gateDecision: GateDecision | null = null;
+      let advisorProfile: AdvisorProfile | null = null;
       if (config.typesafe.keyPresent && !config.typesafeSource.disabled) {
         const catalogModel = await findAdvisorCatalogModel(
           opts.runtime as V2PluginContext,
           config,
         );
         const supportedEfforts = resolveSupportedEfforts(catalogModel, config);
+        advisorProfile = resolveAdvisorProfile({
+          providerID: config.provider,
+          modelID: config.model,
+          requestedEffort,
+          supportedEfforts,
+          defaultEffort:
+            requestedEffort ??
+            resolveAdvisorVariant(catalogModel, config) ??
+            null,
+        });
         const gateSettings = config.typesafe.settings ?? TYPESAFE_DEFAULTS;
         gateDecision = await runTypeSafeGate({
           state: buildDecisionState(db, sessionId, {
@@ -1942,6 +2016,21 @@ async function runAdvisor(opts: {
         });
         gateRecord = gateRecordFrom(gateDecision);
       }
+
+      // Profiles resolve for every consultation: with discovery the advisor
+      // policy reflects live variants, otherwise it fixes to the configured
+      // effort (or the caller's pin).
+      advisorProfile ??= resolveAdvisorProfile({
+        providerID: config.provider,
+        modelID: config.model,
+        requestedEffort,
+        supportedEfforts: [],
+        defaultEffort: config.variant ?? null,
+      });
+      opts.runtime?.__advisorTest?.profileSink?.({
+        requester: requesterProfile,
+        advisor: advisorProfile,
+      });
 
       if (gateDecision?.status === "skip") {
         const latencyMs = Date.now() - started;
@@ -2092,6 +2181,8 @@ export async function setupOcAdvisorV2(
               agent?: string;
               directory?: string;
               abort?: AbortSignal;
+              messageID?: string;
+              id?: string;
             },
           ) {
             const text = await runAdvisor({
@@ -2104,6 +2195,8 @@ export async function setupOcAdvisorV2(
               signal: context.abort,
               callerAgent: context.agent,
               callerDirectory: context.directory,
+              callerMessageID: context.messageID,
+              callerCallID: context.id,
               config: advisorConfig,
             });
             return { content: text };
