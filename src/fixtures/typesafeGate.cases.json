@@ -1,0 +1,133 @@
+{
+  "model": "jev-1.13.0",
+  "cases": [
+    {
+      "id": "routine-factual",
+      "expectation": "skip",
+      "why": "Routine factual lookup with a clear file target; no second opinion changes it.",
+      "input": {
+        "mode": "general",
+        "trigger": "other",
+        "question": "What does the version field in package.json say?"
+      },
+      "state": {
+        "user": { "latestRequest": "What version is this package?" },
+        "context": {
+          "messages": [
+            "## User\nWhat version is this package?",
+            "## Assistant\nReading package.json"
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] }
+      }
+    },
+    {
+      "id": "focused-review",
+      "expectation": "proceed",
+      "why": "Specific correctness concern on a change under review; advice has clear value.",
+      "input": {
+        "mode": "review",
+        "trigger": "pre_complete",
+        "question": "Does the new byte-budget trimming ever drop the latest user request?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "Implement the bounded decision state and trim old context"
+        },
+        "context": {
+          "messages": [
+            "## User\nImplement the bounded decision state and trim old context",
+            "## Assistant\nTrim loop keeps the newest messages that fit and skips the latest user message index"
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] }
+      }
+    },
+    {
+      "id": "consequential-design",
+      "expectation": "proceed",
+      "why": "Unresolved architectural tradeoff with real consequences.",
+      "input": {
+        "mode": "plan",
+        "trigger": "before_approach",
+        "question": "Should screening decisions be cached per session or re-evaluated on every advisor call?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "Add optional screening before advisor generation"
+        },
+        "context": {
+          "messages": [
+            "## User\nAdd optional screening before advisor generation",
+            "## Assistant\nConsidering caching the gate decision versus re-evaluating each call; caching may skip needed consultations after new evidence"
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] }
+      }
+    },
+    {
+      "id": "difficult-debug",
+      "expectation": "proceed",
+      "why": "Repeated failure with contradictory evidence; a second opinion is valuable.",
+      "input": {
+        "mode": "debug",
+        "trigger": "stuck",
+        "question": "Why does the packed install fail to resolve the SDK while the local checkout works?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "The plugin works locally but the packed install throws Cannot find module"
+        },
+        "context": {
+          "messages": [
+            "## User\nThe plugin works locally but the packed install throws Cannot find module",
+            "## Assistant\nTried reinstalling dependencies twice; local and packed resolution still disagree"
+          ]
+        },
+        "history": { "priorConsultations": 2, "priorModes": ["debug", "debug"] }
+      }
+    },
+    {
+      "id": "ambiguous",
+      "expectation": "proceed",
+      "why": "Uncertain evidence must preserve consultation per policy.",
+      "input": {
+        "mode": "plan",
+        "trigger": "before_approach",
+        "question": "Is this rollout sequencing acceptable?"
+      },
+      "state": {
+        "user": { "latestRequest": "Ship the change" },
+        "context": {
+          "messages": [
+            "## User\nShip the change",
+            "## Assistant\nRollout details are not recorded in the visible context"
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] }
+      }
+    },
+    {
+      "id": "repeat-with-new-evidence",
+      "expectation": "proceed",
+      "why": "A repeat question with material new evidence is explicitly welcome.",
+      "input": {
+        "mode": "review",
+        "trigger": "followup",
+        "question": "Does the new test result change your earlier conclusion about the trim loop?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "The byte-budget test now passes with multi-byte content"
+        },
+        "context": {
+          "messages": [
+            "## User\nThe byte-budget test now passes with multi-byte content",
+            "## Assistant\nEarlier review suspected multi-byte overflow; a new passing test is material new evidence"
+          ]
+        },
+        "history": { "priorConsultations": 1, "priorModes": ["review"] }
+      }
+    }
+  ]
+}

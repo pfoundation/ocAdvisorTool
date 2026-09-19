@@ -34,9 +34,12 @@ jobs:
 
       - name: Verify build entrypoint
         run: >
-          bun -e 'const p = await import("./dist/index.js");
-          if (p.default.id !== "oc-advisor" || typeof p.default.setup !== "function" || "server" in p.default) throw new Error("bad entrypoint");
-          console.log("entrypoint OK:", p.default.id);'
+          bun -e 'const root = Bun.resolveSync("./index", ".");
+          const shim = (await import(root)).default;
+          const compiled = (await import("./dist/index.js")).default;
+          if (shim.id !== "oc-advisor" || typeof shim.setup !== "function" || "server" in shim) throw new Error("bad root shim entrypoint");
+          if (compiled.id !== "oc-advisor" || typeof compiled.setup !== "function" || "server" in compiled) throw new Error("bad compiled entrypoint");
+          console.log("entrypoint OK:", shim.id, "via", root);'
 
       - name: Verify tarball contents
         run: >

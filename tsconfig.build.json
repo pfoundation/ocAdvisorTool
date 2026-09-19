@@ -8,6 +8,15 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "include": ["src/index.ts", "src/ocAdvisor.ts"],
-  "exclude": ["src/**/*.test.ts", "src/usageReport.ts"]
+  "include": [
+    "src/index.ts",
+    "src/ocAdvisor.ts",
+    "src/typesafeGate.ts",
+    "src/typesafeState.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/usageReport.ts",
+    "src/typesafeGate.eval.ts"
+  ]
 }
