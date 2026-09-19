@@ -52,5 +52,8 @@
   "devDependencies": {
     "bun-types": "^1.4.2",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0"
   }
 }
