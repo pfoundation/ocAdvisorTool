@@ -185,7 +185,10 @@ Behavior notes:
 - Effort precedence when generation proceeds: an explicit tool `effort`, then
   a confident gate selection, then the configured `variant`.
 - A skip returns a visible `advisor consultation skipped (typesafe)` notice
-  and does not create, switch, or generate on the advisor session.
+  and does not create, switch, or generate on the advisor session. On a
+  proceed or fallback the tool output gains one short line, for example
+  `gate: need=0.31, effort=xhigh (gate), decision=proceed` or
+  `gate: decision=fallback, timeout`; bypassed screening adds nothing.
 - Gate metrics (decision, need probability, selected effort, latency, tokens)
   are recorded alongside the consultation in `ocAdvisor-metrics.jsonl`.
 

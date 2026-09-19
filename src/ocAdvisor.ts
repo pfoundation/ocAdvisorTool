@@ -800,6 +800,37 @@ function gateRecordFrom(decision: GateDecision): GateRecord {
   };
 }
 
+// Human-readable gate summary for the tool output. A bypassed gate contributes
+// nothing, so keyless or disabled installs keep the plain footer.
+export function gateSummary(
+  gate: GateRecord | null | undefined,
+): string | null {
+  if (!gate || gate.status === "bypass") return null;
+  const parts: string[] = [];
+  if (gate.neededProbability !== null) {
+    parts.push(`need=${gate.neededProbability.toFixed(2)}`);
+  }
+  if (gate.effectiveEffort) {
+    parts.push(
+      gate.effortSource === "typesafe"
+        ? `effort=${gate.effectiveEffort} (gate)`
+        : `effort=${gate.effectiveEffort}`,
+    );
+  }
+  switch (gate.status) {
+    case "skip":
+      parts.push("decision=skip", gate.reason);
+      break;
+    case "fallback":
+      parts.push("decision=fallback", gate.reason);
+      break;
+    default:
+      parts.push("decision=proceed");
+      break;
+  }
+  return `gate: ${parts.join(", ")}`;
+}
+
 function getSession(
   db: InstanceType<typeof Database>,
   sessionId: string,
@@ -1811,10 +1842,12 @@ async function runAdvisor(opts: {
         console.log(
           `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=skipped_typesafe needed=${gateDecision.metrics.neededProbability ?? "n/a"} latencyMs=${latencyMs}`,
         );
+        const skipNote = gateSummary(gateRecord);
         return (
           `advisor consultation skipped (typesafe): the request did not need an advisor at this point` +
           `${gateDecision.metrics.neededProbability !== null ? ` (need probability ${gateDecision.metrics.neededProbability.toFixed(2)})` : ""}. ` +
-          `Ask again with a concrete unresolved question if the situation changes.`
+          `Ask again with a concrete unresolved question if the situation changes.` +
+          (skipNote ? `\n_${skipNote}_` : "")
         );
       }
 
@@ -1856,9 +1889,11 @@ async function runAdvisor(opts: {
       console.log(
         `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=advisor_response latencyMs=${latencyMs}`,
       );
+      const gateNote = gateSummary(gateRecord);
       return (
         result.text +
-        `\n\n_advisor consultation #${prior.count + 1} in this session chain (trigger=${trigger})_`
+        `\n\n_advisor consultation #${prior.count + 1} in this session chain (trigger=${trigger})_` +
+        (gateNote ? `\n_${gateNote}_` : "")
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

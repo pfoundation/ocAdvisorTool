@@ -357,6 +357,73 @@ describe("runAdvisor with the TypeSafe gate", () => {
     expect(records[0].outcome).toBe("error");
   });
 
+  test("shows the gate decision in the advisor footer", async () => {
+    const { client } = stubGate(
+      gateResponse(0.72, { choice: "high", confidence: 0.95 }),
+    );
+    const { runtime } = runtimeWith({ gateClient: client });
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "plan",
+      question: "Design the gate",
+      config: baseConfig(),
+    });
+    expect(text).toContain(
+      "gate: need=0.72, effort=high (gate), decision=proceed",
+    );
+    const records = metricRecords();
+    expect(records[0].gate.status).toBe("proceed");
+  });
+
+  test("shows the gate decision on a skip and a fallback", async () => {
+    const skipped = runtimeWith({
+      gateClient: stubGate(gateResponse(0.05)).client,
+    });
+    const skipText = await runAdvisor({
+      runtime: skipped.runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Anything",
+      config: baseConfig(),
+    });
+    expect(skipText).toContain("advisor consultation skipped (typesafe)");
+    expect(skipText).toContain(
+      "gate: need=0.05, decision=skip, consultation_not_useful",
+    );
+
+    const failing: GateClient = {
+      async systemOne() {
+        return { kind: "timeout", type: "timeout" };
+      },
+    };
+    const fallback = runtimeWith({ gateClient: failing });
+    const fallbackText = await runAdvisor({
+      runtime: fallback.runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Anything",
+      config: baseConfig(),
+    });
+    expect(fallbackText).toContain("advisor answer");
+    expect(fallbackText).toContain("gate: decision=fallback, timeout");
+  });
+
+  test("omits the gate line when screening is bypassed", async () => {
+    const { runtime } = runtimeWith({});
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Anything",
+      config: baseConfig({
+        typesafe: { enabled: false, settings: null, keyPresent: false },
+        typesafeSettings: null,
+      }),
+    });
+    expect(text).not.toContain("gate:");
+  });
+
   test("keeps the Fable guard ahead of the gate", async () => {
     const { client, calls } = stubGate(gateResponse(0.9));
     const { runtime, generated } = runtimeWith({ gateClient: client });
