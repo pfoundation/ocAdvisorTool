@@ -1572,10 +1572,27 @@ async function callAdvisor(opts: {
           config,
         );
         const request = { sessionID: sessionId, prompt };
-        const result = opts.signal
-          ? await generate(request, { signal: opts.signal })
-          : await generate(request);
-        const output = extractGeneratedText(result);
+        const startedAt = Date.now();
+        const run = async () => {
+          const result = opts.signal
+            ? await generate(request, { signal: opts.signal })
+            : await generate(request);
+          return extractGeneratedText(result);
+        };
+        // A generation can come back without text (transient provider
+        // behavior, e.g. a reasoning-only response with adaptive thinking).
+        // Retry once while most of the timeout budget remains; never retry
+        // after a caller cancellation.
+        let output = await run();
+        if (!output?.trim() && !opts.signal?.aborted) {
+          const elapsed = Date.now() - startedAt;
+          if (elapsed < config.timeoutMs / 2) {
+            console.log(
+              `[advisor] empty generation; retrying once (session=${sessionId} elapsedMs=${elapsed})`,
+            );
+            output = await run();
+          }
+        }
         if (!output?.trim()) {
           throw new Error("Advisor returned an empty response.");
         }

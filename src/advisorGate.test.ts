@@ -312,6 +312,51 @@ describe("runAdvisor with the TypeSafe gate", () => {
     expect(records.every((record) => record.gate === undefined)).toBe(true);
   });
 
+  test("retries once when a generation comes back empty", async () => {
+    let calls = 0;
+    const { runtime } = runtimeWith({
+      gateClient: stubGate(gateResponse(0.9)).client,
+      generate: async () => {
+        calls++;
+        return calls === 1 ? { text: "" } : { text: "advisor answer" };
+      },
+    });
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Anything",
+      config: baseConfig(),
+    });
+    expect(calls).toBe(2);
+    expect(text).toContain("advisor answer");
+    const records = metricRecords();
+    expect(records[0].outcome).toBe("advisor_response");
+  });
+
+  test("still fails when the retry is empty too", async () => {
+    let calls = 0;
+    const { runtime } = runtimeWith({
+      gateClient: stubGate(gateResponse(0.9)).client,
+      generate: async () => {
+        calls++;
+        return { text: "" };
+      },
+    });
+    await expect(
+      runAdvisor({
+        runtime,
+        sessionId: "ses_fixture",
+        mode: "general",
+        question: "Anything",
+        config: baseConfig(),
+      }),
+    ).rejects.toThrow(/empty response/);
+    expect(calls).toBe(2);
+    const records = metricRecords();
+    expect(records[0].outcome).toBe("error");
+  });
+
   test("keeps the Fable guard ahead of the gate", async () => {
     const { client, calls } = stubGate(gateResponse(0.9));
     const { runtime, generated } = runtimeWith({ gateClient: client });
