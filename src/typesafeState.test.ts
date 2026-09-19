@@ -10,6 +10,8 @@ import {
   type NormalizedTypeSafeOptions,
 } from "./typesafeState";
 
+import type { EvidenceBenchmarks, EvidenceModels } from "./benchmarkEvidence";
+
 function asNormalized(value: unknown): NormalizedTypeSafeOptions {
   if (typeof value !== "object" || value === null || "error" in value) {
     throw new Error(`expected a normalized option: ${JSON.stringify(value)}`);
@@ -313,5 +315,226 @@ describe("buildDecisionState", () => {
     const legacyState = buildState(legacy, "ses_old");
     expect(legacyState.context.messages).toEqual([]);
     expect(legacyState.request.mode).toBe("plan");
+  });
+});
+
+describe("buildDecisionState benchmark evidence", () => {
+  function evidenceFixture(): {
+    models: EvidenceModels;
+    benchmarks: EvidenceBenchmarks;
+  } {
+    const match = (status: "matched") => ({
+      status,
+      source: "local" as const,
+      aaModelID: "synthetic-aa-1",
+      evaluatedEffort: "max",
+    });
+    return {
+      models: {
+        requester: {
+          providerID: "test-provider",
+          modelID: "requester-model",
+          variant: "high",
+          provenance: "invocation_message",
+        },
+        advisor: {
+          providerID: "test-provider",
+          modelID: "advisor-model",
+          policy: {
+            kind: "candidates",
+            candidates: ["high", "xhigh", "max"],
+            fallback: "xhigh",
+          },
+        },
+      },
+      benchmarks: {
+        source: "user",
+        fetchedAt: "2026-09-10T00:00:00.000Z",
+        ageDays: 9,
+        contentHash: "ab".repeat(32),
+        hashVerified: true,
+        requesterMatch: match("matched"),
+        advisorDefaultMatch: match("matched"),
+        advisorCandidates: ["high", "xhigh", "max"].map((effort) => ({
+          effort,
+          ...match("matched"),
+        })),
+        comparisons: [
+          {
+            key: "artificial_analysis_coding_index",
+            label: "Artificial Analysis Coding Index",
+            unit: "index_points",
+            requester: 60,
+            advisor: 80,
+            advisorMinusRequester: 20,
+            comparable: true,
+            reason: null,
+          },
+          {
+            key: "hle",
+            label: "HLE (Humanity's Last Exam)",
+            unit: "fraction",
+            requester: 0.3,
+            advisor: 0.6,
+            advisorMinusRequester: 0.3,
+            comparable: true,
+            reason: null,
+          },
+        ],
+        omitted: false,
+      },
+    };
+  }
+
+  function evidenceDb(): InstanceType<typeof Database> {
+    const db = openFixtureDb();
+    addSession(db, "ses_evd", "Evidence");
+    addMessage(db, "ses_evd", "user", 1, { text: "Do the thing" });
+    addMessage(db, "ses_evd", "assistant", 2, {
+      content: [{ type: "text", text: "Working on it" }],
+    });
+    return db;
+  }
+
+  test("keeps models and benchmarks within budget alongside messages", () => {
+    const db = evidenceDb();
+    const { models, benchmarks } = evidenceFixture();
+    const state = buildState(db, "ses_evd", {
+      question: "Should we ship?",
+      models,
+      benchmarks,
+      maxStateBytes: 8000,
+    });
+    expect(state.models).toEqual(models);
+    expect(state.benchmarks?.comparisons).toHaveLength(2);
+    expect(state.benchmarks?.omitted).toBe(false);
+    expect(state.coverage.benchmarksOmitted).toBe(false);
+    expect(state.coverage.stateBytes).toBeLessThanOrEqual(8000);
+  });
+
+  test("treats absent benchmarks as unavailable, not omitted", () => {
+    const db = evidenceDb();
+    const state = buildState(db, "ses_evd", { question: "Should we ship?" });
+    expect(state.models).toBeNull();
+    expect(state.benchmarks).toBeNull();
+    expect(state.coverage.benchmarksOmitted).toBe(false);
+  });
+
+  test("drops comparisons before task context under header pressure", () => {
+    const db = evidenceDb();
+    const { models, benchmarks } = evidenceFixture();
+    const bare = buildDecisionState(db, "ses_evd", {
+      mode: "plan",
+      trigger: "before_approach",
+      question: "Should we ship?",
+      priorConsultations: 0,
+      priorModes: [],
+      supportedEfforts: [],
+      maxStateBytes: 1000000,
+      models,
+      benchmarks,
+    });
+    const strippedBytes = Buffer.byteLength(
+      JSON.stringify({
+        ...bare,
+        benchmarks: { ...bare.benchmarks!, comparisons: [] },
+      }),
+    );
+    const pressured = buildState(db, "ses_evd", {
+      question: "Should we ship?",
+      models,
+      benchmarks,
+      maxStateBytes: strippedBytes + 50,
+    });
+    expect(pressured.benchmarks?.comparisons).toEqual([]);
+    expect(pressured.benchmarks?.omitted).toBe(true);
+    expect(pressured.models).toEqual(models);
+    expect(pressured.benchmarks?.requesterMatch).toBeDefined();
+    expect(pressured.request.question).toBe("Should we ship?");
+    expect(pressured.user.latestRequest).toBe("Do the thing");
+    expect(pressured.coverage.benchmarksOmitted).toBe(false);
+  });
+
+  test("nulls benchmarks with explicit omission under extreme budgets", () => {
+    const db = evidenceDb();
+    const { models, benchmarks } = evidenceFixture();
+    const bare = buildDecisionState(db, "ses_evd", {
+      mode: "plan",
+      trigger: "before_approach",
+      question: "Should we ship?",
+      priorConsultations: 0,
+      priorModes: [],
+      supportedEfforts: [],
+      maxStateBytes: 1000000,
+      models,
+      benchmarks,
+    });
+    const nulledBytes = Buffer.byteLength(
+      JSON.stringify({ ...bare, benchmarks: null }),
+    );
+    const pressured = buildState(db, "ses_evd", {
+      question: "Should we ship?",
+      models,
+      benchmarks,
+      maxStateBytes: nulledBytes + 50,
+    });
+    expect(pressured.benchmarks).toBeNull();
+    expect(pressured.coverage.benchmarksOmitted).toBe(true);
+    expect(pressured.models).toEqual(models);
+    expect(pressured.request.question).toBe("Should we ship?");
+    expect(pressured.user.latestRequest).toBe("Do the thing");
+  });
+
+  test("holds long IDs, many candidates, and multi-byte text in budget", () => {
+    const db = openFixtureDb();
+    addSession(db, "ses_wide", "Wide");
+    addMessage(db, "ses_wide", "user", 1, { text: "Ship it" });
+    for (let seq = 2; seq < 12; seq++) {
+      addMessage(db, "ses_wide", "assistant", seq, {
+        content: [{ type: "text", text: "大约の内容 ".repeat(200) }],
+      });
+    }
+    const longID = `model-${"x".repeat(200)}`;
+    const candidates = Array.from(
+      { length: 10 },
+      (_, index) => `effort-${index}`,
+    );
+    const state = buildState(db, "ses_wide", {
+      question: "Should we ship?",
+      models: {
+        requester: {
+          providerID: "test-provider",
+          modelID: longID,
+          variant: "high",
+          provenance: "invocation_message",
+        },
+        advisor: {
+          providerID: "test-provider",
+          modelID: longID,
+          policy: { kind: "candidates", candidates, fallback: "effort-9" },
+        },
+      },
+      benchmarks: {
+        ...evidenceFixture().benchmarks,
+        advisorCandidates: candidates.map((effort) => ({
+          effort,
+          status: "matched",
+          source: "local",
+          aaModelID: "synthetic-aa-1",
+          evaluatedEffort: "max",
+        })),
+      },
+      maxStateBytes: 8000,
+    });
+    expect(state.coverage.stateBytes).toBeLessThanOrEqual(8000);
+    expect(state.models?.requester.modelID).toBe(longID);
+    expect(state.models?.advisor.policy).toEqual({
+      kind: "candidates",
+      candidates,
+      fallback: "effort-9",
+    });
+    expect(state.benchmarks?.comparisons).toHaveLength(2);
+    expect(state.coverage.truncated).toBe(true);
+    expect(state.user.latestRequest).toBe("Ship it");
   });
 });

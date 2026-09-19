@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  EFFORT_INSTRUCTIONS,
   GATE_EFFORT_QUESTION,
   GATE_NEEDED_QUESTION,
+  NEEDED_INSTRUCTIONS,
   classifyFailure,
   createSdkClient,
   runTypeSafeGate,
@@ -45,6 +47,8 @@ function fixtureState(overrides: Partial<DecisionState> = {}): DecisionState {
       supportedEfforts: ["high", "xhigh", "max"],
       defaultEffort: "xhigh",
     },
+    models: null,
+    benchmarks: null,
     coverage: {
       truncated: false,
       droppedMessages: 0,
@@ -52,6 +56,7 @@ function fixtureState(overrides: Partial<DecisionState> = {}): DecisionState {
       totalMessages: 1,
       stateBytes: 0,
       maxStateBytes: 16384,
+      benchmarksOmitted: false,
     },
     ...overrides,
   };
@@ -436,5 +441,180 @@ describe("integration with the session fixture", () => {
       expect(decision.effectiveEffort).toBe("high");
       expect(decision.effortSource).toBe("typesafe");
     }
+  });
+});
+
+describe("gate benchmark wire payload", () => {
+  function evidenceState(): DecisionState {
+    return fixtureState({
+      models: {
+        requester: {
+          providerID: "test-provider",
+          modelID: "requester-model",
+          variant: "high",
+          provenance: "invocation_message",
+        },
+        advisor: {
+          providerID: "test-provider",
+          modelID: "advisor-model",
+          policy: {
+            kind: "candidates",
+            candidates: ["high", "xhigh"],
+            fallback: "xhigh",
+          },
+        },
+      },
+      benchmarks: {
+        source: "user",
+        fetchedAt: "2026-09-10T00:00:00.000Z",
+        ageDays: 9,
+        contentHash: "cc".repeat(32),
+        hashVerified: true,
+        requesterMatch: {
+          status: "matched",
+          source: "local",
+          aaModelID: "synthetic-aa-1",
+          evaluatedEffort: "max",
+        },
+        advisorDefaultMatch: {
+          status: "matched",
+          source: "local",
+          aaModelID: "synthetic-aa-2",
+          evaluatedEffort: "max",
+        },
+        advisorCandidates: [
+          {
+            effort: "high",
+            status: "matched",
+            source: "local",
+            aaModelID: "synthetic-aa-2",
+            evaluatedEffort: "max",
+          },
+          {
+            effort: "xhigh",
+            status: "effort_unknown",
+            source: "local",
+            aaModelID: "synthetic-aa-2",
+            evaluatedEffort: null,
+          },
+        ],
+        comparisons: [
+          {
+            key: "artificial_analysis_coding_index",
+            label: "Artificial Analysis Coding Index",
+            unit: "index_points",
+            requester: 60,
+            advisor: 80,
+            advisorMinusRequester: 20,
+            comparable: true,
+            reason: null,
+          },
+          {
+            key: "hle",
+            label: "HLE (Humanity's Last Exam)",
+            unit: "fraction",
+            requester: 0.3,
+            advisor: null,
+            advisorMinusRequester: null,
+            comparable: false,
+            reason: "missing_advisor",
+          },
+        ],
+        omitted: false,
+      },
+    });
+  }
+
+  test("sends profiles, matches, and shared deltas in one payload", async () => {
+    const { client, calls } = stubClient({
+      kind: "response",
+      result: response(0.9),
+    });
+    await runGate({ client, state: evidenceState() });
+    expect(calls).toHaveLength(1);
+    const sent = calls[0]?.state as Record<string, any>;
+
+    expect(sent.models.requester).toEqual({
+      provider: "test-provider",
+      model: "requester-model",
+      effort: "high",
+      provenance: "invocation_message",
+    });
+    expect(sent.models.advisor).toEqual({
+      provider: "test-provider",
+      model: "advisor-model",
+      effort_policy: {
+        kind: "candidates",
+        candidates: ["high", "xhigh"],
+        fallback: "xhigh",
+      },
+    });
+
+    expect(sent.benchmarks.source).toBe("user");
+    expect(sent.benchmarks.fetched_at).toBe("2026-09-10T00:00:00.000Z");
+    expect(sent.benchmarks.age_days).toBe(9);
+    expect(sent.benchmarks.content_hash).toBe("cc".repeat(32));
+    expect(sent.benchmarks.hash_verified).toBe(true);
+    expect(sent.benchmarks.requester_match).toEqual({
+      status: "matched",
+      source: "local",
+      aa_model: "synthetic-aa-1",
+      evaluated_effort: "max",
+    });
+    expect(sent.benchmarks.advisor_default_match.status).toBe("matched");
+    expect(
+      sent.benchmarks.advisor_candidates.map(
+        (entry: { effort: string }) => entry.effort,
+      ),
+    ).toEqual(["high", "xhigh"]);
+    expect(sent.benchmarks.advisor_candidates[1].status).toBe("effort_unknown");
+    expect(sent.benchmarks.comparisons).toEqual([
+      {
+        metric: "artificial_analysis_coding_index",
+        label: "Artificial Analysis Coding Index",
+        unit: "index_points",
+        requester: 60,
+        advisor: 80,
+        advisor_minus_requester: 20,
+        comparable: true,
+        reason: null,
+      },
+      {
+        metric: "hle",
+        label: "HLE (Humanity's Last Exam)",
+        unit: "fraction",
+        requester: 0.3,
+        advisor: null,
+        advisor_minus_requester: null,
+        comparable: false,
+        reason: "missing_advisor",
+      },
+    ]);
+    expect(sent.benchmarks.omitted).toBe(false);
+    expect(sent.coverage.benchmarks_omitted).toBe(false);
+  });
+
+  test("sends explicit nulls without evidence", async () => {
+    const { client, calls } = stubClient({
+      kind: "response",
+      result: response(0.9),
+    });
+    await runGate({ client, state: fixtureState() });
+    expect(calls).toHaveLength(1);
+    const sent = calls[0]?.state as Record<string, any>;
+    expect(sent.models).toBeNull();
+    expect(sent.benchmarks).toBeNull();
+    expect(sent.coverage.benchmarks_omitted).toBe(false);
+  });
+
+  test("instructions reference benchmark evidence rules", () => {
+    expect(NEEDED_INSTRUCTIONS).toContain("Artificial Analysis");
+    expect(NEEDED_INSTRUCTIONS).toContain(
+      "stronger requester can still benefit from independent review",
+    );
+    expect(NEEDED_INSTRUCTIONS).toContain(
+      "never evidence against consultation",
+    );
+    expect(EFFORT_INSTRUCTIONS).toContain("benchmark coverage");
   });
 });

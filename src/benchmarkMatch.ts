@@ -64,6 +64,7 @@ export type ComparisonReason =
 
 export interface MetricComparison {
   key: string;
+  label: string;
   unit: MetricUnit;
   requester: number | null;
   advisor: number | null;
@@ -173,11 +174,9 @@ function finiteOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function metricUnit(key: string): MetricUnit {
-  return (
-    RECOGNIZED_METRICS.find((metric) => metric.key === key)?.unit ??
-    "index_points"
-  );
+function metricDefinition(key: string): { label: string; unit: MetricUnit } {
+  const found = RECOGNIZED_METRICS.find((metric) => metric.key === key);
+  return { label: found?.label ?? key, unit: found?.unit ?? "index_points" };
 }
 
 export function compareBenchmarks(
@@ -213,9 +212,11 @@ export function compareBenchmarks(
     }
     // All recognized v1 metrics are higher-is-better, so a positive delta
     // always favors the advisor. Revisit if a lower-is-better metric lands.
+    const definition = metricDefinition(key);
     return {
       key,
-      unit: metricUnit(key),
+      label: definition.label,
+      unit: definition.unit,
       requester: requesterScore,
       advisor: advisorScore,
       advisorMinusRequester:

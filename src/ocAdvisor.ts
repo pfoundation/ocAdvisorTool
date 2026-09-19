@@ -3,6 +3,19 @@ import { appendFile } from "fs/promises";
 import { homedir } from "os";
 import { isAbsolute, join } from "path";
 import type { BenchmarkPathOptions } from "./benchmarkConfig.js";
+import { resolveBenchmarkPaths } from "./benchmarkConfig.js";
+import {
+  buildBenchmarkEvidence,
+  type EvidenceBenchmarks,
+  type EvidenceModels,
+} from "./benchmarkEvidence.js";
+import type { MatchStatus } from "./benchmarkMatch.js";
+import {
+  createBenchmarkStore,
+  type BenchmarkFileSystem,
+  type BenchmarkStore,
+  type BenchmarkView,
+} from "./benchmarkStore.js";
 import {
   resolveAdvisorProfile,
   resolveRequesterProfile,
@@ -442,6 +455,22 @@ interface AdvisorMetrics {
   priorConsultations: number;
   via: string;
   gate?: GateRecord;
+  benchmarks?: BenchmarkMetricsSummary;
+}
+
+// Compact benchmark evidence for the metrics log. Older rows omit the
+// whole field; reports must treat it as optional.
+interface BenchmarkMetricsSummary {
+  source: "user" | "seed" | "unavailable";
+  contentHash: string | null;
+  fetchedAt: string | null;
+  hashVerified: boolean;
+  requester: string | null;
+  requesterMatch: MatchStatus | null;
+  advisorPolicy: string | null;
+  advisorMatch: MatchStatus | null;
+  finalEffort: string | null;
+  finalMatch: MatchStatus | null;
 }
 
 const ADVISOR_INPUT_SCHEMA = {
@@ -559,6 +588,13 @@ interface V2PluginContext {
       requester: RequesterProfile;
       advisor: AdvisorProfile;
     }) => void;
+    benchmarkStoreOptions?: {
+      env?: Record<string, string | undefined>;
+      fs?: BenchmarkFileSystem;
+      seedSnapshotPath?: string;
+      seedMappingsPath?: string;
+      maxBytes?: number;
+    };
   };
 }
 
@@ -1821,6 +1857,116 @@ async function callAdvisor(opts: {
   };
 }
 
+// Benchmark stores live for the process, keyed by resolved user paths (and
+// test seed overrides), so every consultation observes CLI refreshes
+// without re-reading unchanged files. Tests reset between cases.
+const benchmarkStores = new Map<string, BenchmarkStore>();
+
+function resetBenchmarkStores(): void {
+  benchmarkStores.clear();
+}
+
+function benchmarkStoreKey(
+  snapshotPath: string,
+  mappingsPath: string,
+  seedSnapshotPath?: string,
+  seedMappingsPath?: string,
+): string {
+  return [
+    snapshotPath,
+    mappingsPath,
+    seedSnapshotPath ?? "",
+    seedMappingsPath ?? "",
+  ].join("\n");
+}
+
+interface LoadedBenchmarkEvidence {
+  view: BenchmarkView;
+  evidence: { models: EvidenceModels; benchmarks: EvidenceBenchmarks };
+}
+
+// Loads one consistent benchmark view and assembles gate evidence from it.
+// Any failure (bad paths, unreadable files, unexpected errors) yields null
+// and the consultation proceeds without benchmark enrichment.
+async function loadBenchmarkEvidence(
+  runtime: V2PluginContext | null | undefined,
+  config: AdvisorConfig,
+  requester: RequesterProfile,
+  advisor: AdvisorProfile,
+): Promise<LoadedBenchmarkEvidence | null> {
+  try {
+    const testOpts = runtime?.__advisorTest?.benchmarkStoreOptions;
+    const paths = resolveBenchmarkPaths(
+      config.benchmarks,
+      testOpts?.env ?? process.env,
+    );
+    if ("error" in paths) return null;
+    const key = benchmarkStoreKey(
+      paths.snapshotPath,
+      paths.mappingsPath,
+      testOpts?.seedSnapshotPath,
+      testOpts?.seedMappingsPath,
+    );
+    let store = benchmarkStores.get(key);
+    if (!store) {
+      store = await createBenchmarkStore({
+        snapshotPath: paths.snapshotPath,
+        mappingsPath: paths.mappingsPath,
+        seedSnapshotPath: testOpts?.seedSnapshotPath,
+        seedMappingsPath: testOpts?.seedMappingsPath,
+        fs: testOpts?.fs,
+        maxBytes: testOpts?.maxBytes,
+      });
+      benchmarkStores.set(key, store);
+    }
+    const view = await store.view();
+    return {
+      view,
+      evidence: buildBenchmarkEvidence({ requester, advisor, view }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function summarizeBenchmarkEvidence(
+  loaded: LoadedBenchmarkEvidence | null,
+  finalEffort: string | null,
+): BenchmarkMetricsSummary | undefined {
+  if (!loaded) return undefined;
+  const { view, evidence } = loaded;
+  const { requester, advisor } = evidence.models;
+  const policy = advisor.policy;
+  const finalMatch =
+    finalEffort === null
+      ? null
+      : view.matcher.match({
+          providerID: advisor.providerID,
+          modelID: advisor.modelID,
+          variant: finalEffort,
+        }).status;
+  return {
+    source: evidence.benchmarks.source,
+    contentHash: evidence.benchmarks.contentHash,
+    fetchedAt: evidence.benchmarks.fetchedAt,
+    hashVerified: evidence.benchmarks.hashVerified,
+    requester:
+      requester.providerID && requester.modelID
+        ? `${requester.providerID}/${requester.modelID}${requester.variant ? `#${requester.variant}` : ""} (${requester.provenance})`
+        : null,
+    requesterMatch: evidence.benchmarks.requesterMatch.status,
+    advisorPolicy:
+      policy.kind === "pinned"
+        ? `pinned:${policy.effort}`
+        : policy.kind === "candidates"
+          ? `candidates:${policy.candidates.join(",")}>${policy.fallback ?? "none"}`
+          : `fixed:${policy.effort ?? "none"}`,
+    advisorMatch: evidence.benchmarks.advisorDefaultMatch.status,
+    finalEffort,
+    finalMatch,
+  };
+}
+
 async function runAdvisor(opts: {
   runtime: V2PluginContext | null | undefined;
   sessionId?: string;
@@ -1957,6 +2103,7 @@ async function runAdvisor(opts: {
     let requestedEffort: string | undefined;
     let effectiveEffort: string | undefined;
     let gateRecord: GateRecord | undefined;
+    let benchmarkLoaded: LoadedBenchmarkEvidence | null = null;
     try {
       requestedEffort = resolveRequestedEffort(config, opts.effort);
 
@@ -1983,6 +2130,12 @@ async function runAdvisor(opts: {
             null,
         });
         const gateSettings = config.typesafe.settings ?? TYPESAFE_DEFAULTS;
+        benchmarkLoaded = await loadBenchmarkEvidence(
+          opts.runtime,
+          config,
+          requesterProfile,
+          advisorProfile,
+        );
         gateDecision = await runTypeSafeGate({
           state: buildDecisionState(db, sessionId, {
             question: opts.question ?? null,
@@ -1997,6 +2150,8 @@ async function runAdvisor(opts: {
             supportedEfforts,
             defaultEffort: requestedEffort ?? config.variant ?? null,
             maxStateBytes: gateSettings.maxStateBytes,
+            models: benchmarkLoaded?.evidence.models ?? null,
+            benchmarks: benchmarkLoaded?.evidence.benchmarks ?? null,
             formatMessage: formatV2Message,
           }),
           input: {
@@ -2053,6 +2208,7 @@ async function runAdvisor(opts: {
           priorConsultations: prior.count,
           via: "opencode-session",
           gate: gateRecord,
+          benchmarks: summarizeBenchmarkEvidence(benchmarkLoaded, null),
         });
         console.log(
           `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=skipped_typesafe needed=${gateDecision.metrics.neededProbability ?? "n/a"} latencyMs=${latencyMs}`,
@@ -2100,6 +2256,10 @@ async function runAdvisor(opts: {
         priorConsultations: prior.count,
         via: "opencode-session",
         gate: gateRecord,
+        benchmarks: summarizeBenchmarkEvidence(
+          benchmarkLoaded,
+          result.variant ?? effectiveEffort ?? requestedEffort ?? null,
+        ),
       });
       console.log(
         `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=advisor_response latencyMs=${latencyMs}`,
@@ -2133,6 +2293,10 @@ async function runAdvisor(opts: {
         priorConsultations: prior.count,
         via: "opencode-session",
         gate: gateRecord,
+        benchmarks: summarizeBenchmarkEvidence(
+          benchmarkLoaded,
+          effectiveEffort ?? requestedEffort ?? null,
+        ),
       });
       console.log(
         `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=error errorType=${errorType} latencyMs=${latencyMs}`,
@@ -2287,6 +2451,7 @@ export {
   resolveRequestedEffort,
   resolveSupportedEfforts,
   resetAdvisorSessionCache,
+  resetBenchmarkStores,
   unwrapData,
   withTimeout,
   formatV2Message,
@@ -2296,6 +2461,8 @@ export type {
   AdvisorConfig,
   AdvisorOutcome,
   AdvisorTrigger,
+  BenchmarkMetricsSummary,
+  LoadedBenchmarkEvidence,
   V2PluginContext,
   TypeSafeOptions,
 };

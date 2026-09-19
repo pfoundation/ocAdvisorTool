@@ -50,6 +50,18 @@ interface MetricsRow {
     inputTokens?: number | null;
     outputTokens?: number | null;
   };
+  benchmarks?: {
+    source?: string;
+    contentHash?: string | null;
+    fetchedAt?: string | null;
+    hashVerified?: boolean;
+    requester?: string | null;
+    requesterMatch?: string | null;
+    advisorPolicy?: string | null;
+    advisorMatch?: string | null;
+    finalEffort?: string | null;
+    finalMatch?: string | null;
+  };
 }
 
 function parseArgs(): { days: number } {
@@ -98,6 +110,55 @@ function countBy<T>(
     counts[label] = (counts[label] ?? 0) + 1;
   }
   return counts;
+}
+
+// Pure benchmark summary for reports and tests. Rows without benchmark
+// evidence (older plugin versions, bypassed gates) are ignored.
+export function benchmarkSummaryLines(
+  rows: MetricsRow[],
+  nowMs: number = Date.now(),
+): string[] {
+  const enriched = rows.filter((row) => row.benchmarks);
+  if (enriched.length === 0) return [];
+  const lines = [
+    `- Benchmark sources: ${JSON.stringify(countBy(enriched, (row) => row.benchmarks?.source || "unknown"))}`,
+    `- Requester matches: ${JSON.stringify(countBy(enriched, (row) => row.benchmarks?.requesterMatch || "unknown"))}`,
+    `- Advisor default matches: ${JSON.stringify(countBy(enriched, (row) => row.benchmarks?.advisorMatch || "unknown"))}`,
+  ];
+  const finals = enriched.filter((row) => row.benchmarks?.finalMatch);
+  if (finals.length > 0) {
+    lines.push(
+      `- Final effort matches: ${JSON.stringify(countBy(finals, (row) => row.benchmarks?.finalMatch || "unknown"))}`,
+    );
+  }
+  const hashes = new Set(
+    enriched
+      .map((row) => row.benchmarks?.contentHash)
+      .filter((hash): hash is string => !!hash),
+  );
+  if (hashes.size > 0) {
+    lines.push(`- Benchmark snapshots seen: ${hashes.size}`);
+  }
+  const ages = enriched
+    .map((row) => {
+      const fetchedAt = row.benchmarks?.fetchedAt;
+      if (!fetchedAt) return NaN;
+      const parsed = Date.parse(fetchedAt);
+      if (!Number.isFinite(parsed)) return NaN;
+      const days = (nowMs - parsed) / DAY_MS;
+      return days >= 0 ? days : NaN;
+    })
+    .filter((days) => Number.isFinite(days));
+  if (ages.length > 0) {
+    lines.push(`- Median benchmark data age: ${median(ages)?.toFixed(1)} days`);
+  }
+  const unverified = enriched.filter(
+    (row) => row.benchmarks?.hashVerified === false,
+  ).length;
+  if (unverified > 0) {
+    lines.push(`- Snapshots failing hash verification: ${unverified}`);
+  }
+  return lines;
 }
 
 function queryEligibility(
@@ -269,6 +330,9 @@ async function main(): Promise<void> {
         );
       }
       console.log(`- Median latency: ${median(latencies) ?? "n/a"} ms`);
+      for (const line of benchmarkSummaryLines(metrics)) {
+        console.log(line);
+      }
       if (inputTokens.length === 0) {
         console.log(
           "- Token usage: unavailable (OpenCode session generation returns text only)",
@@ -300,4 +364,6 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (import.meta.main) {
+  await main();
+}
