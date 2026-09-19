@@ -3,7 +3,14 @@ import { appendFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import {
+  runTypeSafeGate,
+  type GateClient,
+  type GateDecision,
+  type GateMetrics,
+} from "./typesafeGate.js";
+import {
   TYPESAFE_DEFAULTS,
+  buildDecisionState,
   normalizeTypeSafeOptions,
   resolveTypeSafeConfig,
   type NormalizedTypeSafeOptions,
@@ -294,9 +301,26 @@ type AdvisorTrigger = (typeof ADVISOR_TRIGGERS)[number];
 type AdvisorOutcome =
   | "advisor_response"
   | "skipped_fable"
+  | "skipped_typesafe"
   | "error"
   | "no_transcript"
   | "no_session";
+
+interface GateRecord {
+  status: "bypass" | "skip" | "proceed" | "fallback" | "cancelled";
+  reason: string;
+  model: string | null;
+  neededProbability: number | null;
+  suggestedEffort: string | null;
+  effortConfidence: number | null;
+  effectiveEffort: string | null;
+  effortSource: "caller" | "typesafe" | "config" | null;
+  latencyMs: number;
+  stateBytes: number;
+  truncated: boolean;
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
 
 interface AdvisorMetrics {
   ts: string;
@@ -316,6 +340,7 @@ interface AdvisorMetrics {
   transcriptChars: number;
   priorConsultations: number;
   via: string;
+  gate?: GateRecord;
 }
 
 const ADVISOR_INPUT_SCHEMA = {
@@ -415,10 +440,24 @@ interface V2PluginContext {
   };
   integration?: { connection?: { active?: Function } };
   storage?: { get?: Function; set?: Function };
+  // Test seam: inject a gate client and environment without touching the
+  // SDK or the host process environment, and point session/metrics reads at
+  // a fixture instead of production state.
+  __advisorTest?: {
+    gateClient?: GateClient;
+    gateEnv?: Record<string, string | undefined>;
+    gateFetch?: typeof fetch;
+    dbPath?: string;
+    metricsPath?: string;
+  };
 }
 
-function openDb(): InstanceType<typeof Database> {
-  return new Database(DB_PATH, { readonly: true });
+function openDb(
+  runtime?: V2PluginContext | null,
+): InstanceType<typeof Database> {
+  return new Database(runtime?.__advisorTest?.dbPath ?? DB_PATH, {
+    readonly: true,
+  });
 }
 
 function tableExists(db: InstanceType<typeof Database>, name: string): boolean {
@@ -629,9 +668,16 @@ function isAdvisorToolName(name: unknown): boolean {
 function countPriorAdvisorCalls(
   db: InstanceType<typeof Database>,
   sessionId: string,
-): { count: number; modes: string[] } {
+): { count: number; modes: string[]; questions: string[] } {
   const callIds = new Set<string>();
   const modes: string[] = [];
+  const questions: string[] = [];
+  const record = (input: Record<string, any> | undefined) => {
+    modes.push(String(input?.mode || "general"));
+    if (typeof input?.question === "string" && input.question.trim()) {
+      questions.push(input.question);
+    }
+  };
   try {
     for (const sid of collectSessionChain(db, sessionId)) {
       if (tableExists(db, "session_message")) {
@@ -658,7 +704,7 @@ function countPriorAdvisorCalls(
               const cid = String(block.id || block.callID || row.id);
               if (!callIds.has(cid)) {
                 callIds.add(cid);
-                modes.push(String(state.input?.mode || "general"));
+                record(state.input);
               }
             }
             nested.forEach((call: Record<string, any>, index: number) => {
@@ -666,7 +712,7 @@ function countPriorAdvisorCalls(
                 const cid = `${block.id || row.id}#${index}`;
                 if (!callIds.has(cid)) {
                   callIds.add(cid);
-                  modes.push(String(call.input?.mode || "general"));
+                  record(call.input);
                 }
               }
             });
@@ -692,20 +738,64 @@ function countPriorAdvisorCalls(
           const cid = String(block.callID || block.id || "");
           if (!cid || callIds.has(cid)) continue;
           callIds.add(cid);
-          modes.push(String(block.state?.input?.mode || "general"));
+          record(block.state?.input);
         }
       }
     }
   } catch {}
-  return { count: callIds.size, modes };
+  return { count: callIds.size, modes, questions };
 }
 
-async function logAdvisorMetrics(metrics: AdvisorMetrics): Promise<void> {
+async function logAdvisorMetrics(
+  runtime: V2PluginContext | null | undefined,
+  metrics: AdvisorMetrics,
+): Promise<void> {
   try {
-    await appendFile(METRICS_PATH, JSON.stringify(metrics) + "\n", "utf-8");
+    const path = runtime?.__advisorTest?.metricsPath ?? METRICS_PATH;
+    await appendFile(path, JSON.stringify(metrics) + "\n", "utf-8");
   } catch {
     // Metrics must never break the advisor call.
   }
+}
+
+// Flattens a gate decision into the additive metrics record. A bypassed gate
+// reports `bypass` so reports can separate bypass, skip, fallback, and
+// allowed proceed without inferring from other fields.
+function gateRecordFrom(decision: GateDecision): GateRecord {
+  if (decision.status === "disabled") {
+    return {
+      status: "bypass",
+      reason: "disabled",
+      model: null,
+      neededProbability: null,
+      suggestedEffort: null,
+      effortConfidence: null,
+      effectiveEffort: null,
+      effortSource: null,
+      latencyMs: 0,
+      stateBytes: 0,
+      truncated: false,
+      inputTokens: null,
+      outputTokens: null,
+    };
+  }
+  const metrics = decision.metrics;
+  return {
+    status: decision.status,
+    reason: decision.reason,
+    model: metrics.model,
+    neededProbability: metrics.neededProbability,
+    suggestedEffort: metrics.suggestedEffort,
+    effortConfidence: metrics.effortConfidence,
+    effectiveEffort:
+      decision.status === "proceed" ? decision.effectiveEffort : null,
+    effortSource: decision.status === "proceed" ? decision.effortSource : null,
+    latencyMs: metrics.latencyMs,
+    stateBytes: metrics.stateBytes,
+    truncated: metrics.truncated,
+    inputTokens: metrics.inputTokens,
+    outputTokens: metrics.outputTokens,
+  };
 }
 
 function getSession(
@@ -1071,6 +1161,26 @@ function resolveAdvisorVariant(
   return ids.includes(config.variant) ? config.variant : undefined;
 }
 
+// Effort levels the gate may choose: plugin-allowed candidates intersected
+// with the model's live variants. Unknown discovery yields no candidates,
+// which keeps the configured effort and omits automatic effort selection.
+function resolveSupportedEfforts(
+  model: CatalogModelRef | null | undefined,
+  config: AdvisorConfig,
+): string[] {
+  const allowed =
+    config.agentEffort && config.agentEffort.length > 0
+      ? config.agentEffort
+      : null;
+  if (!allowed || !model || !Array.isArray(model.variants)) return [];
+  const variants = new Set(
+    model.variants
+      .map((variant) => variant?.id)
+      .filter((id): id is string => !!id),
+  );
+  return allowed.filter((effort) => variants.has(effort));
+}
+
 function hasAdvisorConnection(connection: unknown): boolean {
   if (connection === null || connection === undefined) return false;
   if (typeof connection === "object" && !Array.isArray(connection)) {
@@ -1081,6 +1191,24 @@ function hasAdvisorConnection(connection: unknown): boolean {
     }
   }
   return true;
+}
+
+// Shared by support checks and the effort gate; null means discovery is
+// unavailable or the configured model was not found.
+async function findAdvisorCatalogModel(
+  runtime: V2PluginContext,
+  config: AdvisorConfig,
+): Promise<CatalogModelRef | null> {
+  if (typeof runtime.catalog?.model?.list !== "function") return null;
+  try {
+    const models = unwrapData(
+      (await runtime.catalog.model.list()) as
+        CatalogModelRef[] | { data: CatalogModelRef[] },
+    );
+    return findAdvisorModel(models, config);
+  } catch {
+    return null;
+  }
 }
 
 type AdvisorSupport =
@@ -1487,7 +1615,7 @@ async function runAdvisor(opts: {
   const questionChars = opts.question?.length ?? 0;
 
   if (!sessionId) {
-    await logAdvisorMetrics({
+    await logAdvisorMetrics(opts.runtime, {
       ts: new Date().toISOString(),
       sessionId: null,
       callerModel: null,
@@ -1513,14 +1641,14 @@ async function runAdvisor(opts: {
 
   let db: InstanceType<typeof Database> | null = null;
   try {
-    db = openDb();
+    db = openDb(opts.runtime);
     const info = getSessionInfo(db, sessionId);
     const callerModel = callerLabel(info?.model ?? null);
     const callerAgent = opts.callerAgent || info?.agent || null;
     const directory = opts.callerDirectory || info?.directory || null;
 
     if (isFableModel(info?.model)) {
-      await logAdvisorMetrics({
+      await logAdvisorMetrics(opts.runtime, {
         ts: new Date().toISOString(),
         sessionId,
         callerModel,
@@ -1547,7 +1675,7 @@ async function runAdvisor(opts: {
 
     let transcript = buildTranscript(db, sessionId);
     if (!transcript?.trim()) {
-      await logAdvisorMetrics({
+      await logAdvisorMetrics(opts.runtime, {
         ts: new Date().toISOString(),
         sessionId,
         callerModel,
@@ -1588,20 +1716,105 @@ async function runAdvisor(opts: {
 
     const systemPrompt = SYSTEM_PROMPTS[mode] || SYSTEM_PROMPTS.general;
     let requestedEffort: string | undefined;
+    let effectiveEffort: string | undefined;
+    let gateRecord: GateRecord | undefined;
     try {
       requestedEffort = resolveRequestedEffort(config, opts.effort);
+
+      // Optional TypeSafe preflight: one bounded request decides whether this
+      // consultation is worth the expensive generation and, when the caller
+      // did not pin an effort, which supported effort fits. Gate failures
+      // fall back to the ordinary behavior and never fail the call.
+      let gateDecision: GateDecision | null = null;
+      if (config.typesafe.keyPresent && !config.typesafeSource.disabled) {
+        const catalogModel = await findAdvisorCatalogModel(
+          opts.runtime as V2PluginContext,
+          config,
+        );
+        const supportedEfforts = resolveSupportedEfforts(catalogModel, config);
+        const gateSettings = config.typesafe.settings ?? TYPESAFE_DEFAULTS;
+        gateDecision = await runTypeSafeGate({
+          state: buildDecisionState(db, sessionId, {
+            question: opts.question ?? null,
+            mode,
+            trigger,
+            explicitEffort: requestedEffort ?? null,
+            caller: callerModel,
+            directory,
+            priorConsultations: prior.count,
+            priorModes: prior.modes,
+            priorQuestions: prior.questions,
+            supportedEfforts,
+            defaultEffort: requestedEffort ?? config.variant ?? null,
+            maxStateBytes: gateSettings.maxStateBytes,
+            formatMessage: formatV2Message,
+          }),
+          input: {
+            mode,
+            trigger,
+            question: opts.question ?? null,
+            explicitEffort: requestedEffort ?? null,
+            supportedEfforts,
+            defaultEffort: requestedEffort ?? config.variant ?? null,
+          },
+          settings: gateSettings,
+          keyPresent: config.typesafe.keyPresent,
+          client: opts.runtime?.__advisorTest?.gateClient,
+          env: opts.runtime?.__advisorTest?.gateEnv,
+          fetchImpl: opts.runtime?.__advisorTest?.gateFetch,
+          signal: opts.signal,
+        });
+        gateRecord = gateRecordFrom(gateDecision);
+      }
+
+      if (gateDecision?.status === "skip") {
+        const latencyMs = Date.now() - started;
+        await logAdvisorMetrics(opts.runtime, {
+          ts: new Date().toISOString(),
+          sessionId,
+          callerModel,
+          callerAgent,
+          directory,
+          mode,
+          trigger,
+          questionChars,
+          effort: null,
+          outcome: "skipped_typesafe",
+          errorType: null,
+          latencyMs,
+          inputTokens: null,
+          outputTokens: null,
+          transcriptChars: transcript.length,
+          priorConsultations: prior.count,
+          via: "opencode-session",
+          gate: gateRecord,
+        });
+        console.log(
+          `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=skipped_typesafe needed=${gateDecision.metrics.neededProbability ?? "n/a"} latencyMs=${latencyMs}`,
+        );
+        return (
+          `advisor consultation skipped (typesafe): the request did not need an advisor at this point` +
+          `${gateDecision.metrics.neededProbability !== null ? ` (need probability ${gateDecision.metrics.neededProbability.toFixed(2)})` : ""}. ` +
+          `Ask again with a concrete unresolved question if the situation changes.`
+        );
+      }
+
+      effectiveEffort =
+        gateDecision?.status === "proceed" && gateDecision.effectiveEffort
+          ? gateDecision.effectiveEffort
+          : requestedEffort;
       const result = await callAdvisor({
         runtime: opts.runtime,
         systemPrompt,
         transcript,
         question: opts.question,
         priorNote,
-        effort: requestedEffort,
+        effort: effectiveEffort,
         signal: opts.signal,
         config,
       });
       const latencyMs = Date.now() - started;
-      await logAdvisorMetrics({
+      await logAdvisorMetrics(opts.runtime, {
         ts: new Date().toISOString(),
         sessionId,
         callerModel,
@@ -1619,6 +1832,7 @@ async function runAdvisor(opts: {
         transcriptChars: transcript.length,
         priorConsultations: prior.count,
         via: "opencode-session",
+        gate: gateRecord,
       });
       console.log(
         `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=advisor_response latencyMs=${latencyMs}`,
@@ -1631,7 +1845,7 @@ async function runAdvisor(opts: {
       const message = err instanceof Error ? err.message : String(err);
       const errorType = classifyAdvisorError(message);
       const latencyMs = Date.now() - started;
-      await logAdvisorMetrics({
+      await logAdvisorMetrics(opts.runtime, {
         ts: new Date().toISOString(),
         sessionId,
         callerModel,
@@ -1640,7 +1854,7 @@ async function runAdvisor(opts: {
         mode,
         trigger,
         questionChars,
-        effort: requestedEffort ?? null,
+        effort: effectiveEffort ?? requestedEffort ?? null,
         outcome: "error",
         errorType,
         latencyMs,
@@ -1649,6 +1863,7 @@ async function runAdvisor(opts: {
         transcriptChars: transcript.length,
         priorConsultations: prior.count,
         via: "opencode-session",
+        gate: gateRecord,
       });
       console.log(
         `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=error errorType=${errorType} latencyMs=${latencyMs}`,
@@ -1794,10 +2009,12 @@ export {
   resolveAdvisorConfig,
   resolveAdvisorVariant,
   resolveRequestedEffort,
+  resolveSupportedEfforts,
   resetAdvisorSessionCache,
   unwrapData,
   withTimeout,
   formatV2Message,
+  runAdvisor,
 };
 export type {
   AdvisorConfig,
