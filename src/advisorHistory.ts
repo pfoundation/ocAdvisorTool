@@ -5,8 +5,8 @@
 // call now carries:
 //
 // - `generation`: what the plugin recorded — a generated advisor response, a
-//   Fable/TypeSafe skip notice, or a real failure. "unknown" means the tool
-//   completed without visible output.
+//   Fable/model/TypeSafe skip notice, or a real failure. "unknown" means the
+//   tool completed without visible output.
 // - `caller`: what the tool entry recorded. An `error` entry can still have
 //   produced advice (for example the caller was interrupted while the plugin
 //   generated), so the two views stay separate instead of being summed.
@@ -15,6 +15,7 @@ import { Database } from "bun:sqlite";
 export type AdvisorGeneration =
   | "advisor_response"
   | "skipped_fable"
+  | "skipped_model"
   | "skipped_typesafe"
   | "error"
   | "running"
@@ -53,6 +54,10 @@ export function isDisabledNotice(output: string): boolean {
   );
 }
 
+export function isModelOptOutNotice(output: string): boolean {
+  return output.startsWith("advisor is disabled (model opt-out):");
+}
+
 export function isSkipNotice(output: string): boolean {
   return output.startsWith("advisor consultation skipped");
 }
@@ -89,6 +94,7 @@ function generationFrom(
     return "running";
   }
   if (!hadOutput || !output.trim()) return "unknown";
+  if (isModelOptOutNotice(output)) return "skipped_model";
   if (isDisabledNotice(output)) return "skipped_fable";
   if (isSkipNotice(output)) return "skipped_typesafe";
   if (isFailureFooter(output)) return "error";
@@ -238,6 +244,7 @@ function rank(record: AdvisorCallRecord): number {
   if (record.generation === "advisor_response") score += 2;
   if (
     record.generation === "skipped_fable" ||
+    record.generation === "skipped_model" ||
     record.generation === "skipped_typesafe"
   ) {
     score += 1;
