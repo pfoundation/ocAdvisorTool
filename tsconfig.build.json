@@ -14,5 +14,9 @@
     "src/typesafeGate.ts",
     "src/typesafeState.ts"
   ],
-  "exclude": ["src/**/*.test.ts", "src/usageReport.ts"]
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/usageReport.ts",
+    "src/typesafeGate.eval.ts"
+  ]
 }

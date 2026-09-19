@@ -224,7 +224,47 @@ export interface BuildDecisionStateOptions {
   supportedEfforts: string[];
   defaultEffort?: string | null;
   maxStateBytes?: number;
-  formatMessage: (type: string, data: Record<string, any>) => string | null;
+  formatMessage?: (type: string, data: Record<string, any>) => string | null;
+}
+
+// Assembles the decision state shell without reading any session records;
+// the builder below fills `context` from the session chain. Exported so the
+// evaluation and tests can construct representative state directly.
+export function makeDecisionState(
+  options: BuildDecisionStateOptions,
+): DecisionState {
+  return {
+    request: {
+      question: options.question ?? null,
+      mode: options.mode,
+      trigger: options.trigger,
+      explicitEffort: options.explicitEffort ?? null,
+      caller: options.caller ?? null,
+      directory: options.directory ?? null,
+    },
+    user: { latestRequest: null },
+    context: { messages: [], latestUserIncluded: false },
+    history: {
+      priorConsultations: options.priorConsultations,
+      priorModes: options.priorModes,
+      repeatedQuestion: isRepeatedQuestion(
+        options.question ?? null,
+        options.priorQuestions ?? [],
+      ),
+    },
+    availability: {
+      supportedEfforts: [...options.supportedEfforts],
+      defaultEffort: options.defaultEffort ?? null,
+    },
+    coverage: {
+      truncated: false,
+      droppedMessages: 0,
+      includedMessages: 0,
+      totalMessages: 0,
+      stateBytes: 0,
+      maxStateBytes: options.maxStateBytes ?? 0,
+    },
+  };
 }
 
 function getChainRow(
@@ -345,42 +385,15 @@ export function buildDecisionState(
   const entries = chain.length > 0 ? readChainMessages(db, chain) : [];
   const latestRequest = latestUserRequest(entries);
 
-  const base: DecisionState = {
-    request: {
-      question: options.question ?? null,
-      mode: options.mode,
-      trigger: options.trigger,
-      explicitEffort: options.explicitEffort ?? null,
-      caller: options.caller ?? null,
-      directory: options.directory ?? null,
-    },
-    user: { latestRequest },
-    context: { messages: [], latestUserIncluded: latestRequest !== null },
-    history: {
-      priorConsultations: options.priorConsultations,
-      priorModes: options.priorModes,
-      repeatedQuestion: isRepeatedQuestion(
-        options.question ?? null,
-        options.priorQuestions ?? [],
-      ),
-    },
-    availability: {
-      supportedEfforts: [...options.supportedEfforts],
-      defaultEffort: options.defaultEffort ?? null,
-    },
-    coverage: {
-      truncated: false,
-      droppedMessages: 0,
-      includedMessages: 0,
-      totalMessages: entries.length,
-      stateBytes: 0,
-      maxStateBytes: 0,
-    },
-  };
+  const base = makeDecisionState({ ...options, formatMessage: undefined });
+  base.user.latestRequest = latestRequest;
+  base.context.latestUserIncluded = latestRequest !== null;
+  base.coverage.totalMessages = entries.length;
+  if (!options.formatMessage) return base;
 
   const maxBytes = options.maxStateBytes ?? Infinity;
   const rendered: Array<string | null> = entries.map((entry) =>
-    messageText(entry, options.formatMessage),
+    messageText(entry, options.formatMessage ?? (() => null)),
   );
   // The latest user request is the intent under review; keep it even when
   // older context must be dropped.

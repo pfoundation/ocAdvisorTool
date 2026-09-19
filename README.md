@@ -298,6 +298,22 @@ checkpoints to judge coverage and whether advice is changing outcomes. The
 usage report is a maintainer tool run from a source checkout; it is not
 shipped in the npm package.
 
+## Gate evaluation
+
+`bun src/typesafeGate.eval.ts [--model jev-1.13.0]` runs labeled cases from
+`src/fixtures/typesafeGate.cases.json` against the gate and prints per-case
+decisions plus false-skip, unnecessary-proceed, fallback, latency, token, and
+cost figures. It requires `TYPESAFE_API_KEY` in the process environment and
+calls TypeSafe only — never the advisor model. Neither the script nor its
+fixtures are published.
+
+Initial run (2026-09-19, `jev-1.13.0`, six cases, 4,240 input tokens,
+≈$0.00018): no false skips on must-consult cases, no fallbacks, latency
+p50/p95 266/626 ms. One routine question scored exactly at the default
+`skipBelow` (0.20) and proceeded; the threshold is deliberately conservative
+so uncertainty preserves consultation. Adjust `skipBelow` only from observed
+cases and re-run the evaluation after changing it.
+
 ## Versioning
 
 Releases use calendar versioning (`YY.M.patch`, e.g. `26.9.0`). The Git tag

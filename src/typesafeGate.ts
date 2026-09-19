@@ -6,7 +6,11 @@
 // timeouts, transport errors, malformed answers, and missing credentials all
 // fall back to the ordinary advisor behavior.
 import { TypeSafeClient, choice, noul } from "@typesafe-ai/sdk";
-import type { DecisionState, TypeSafeSettings } from "./typesafeState.js";
+import {
+  makeDecisionState,
+  type DecisionState,
+  type TypeSafeSettings,
+} from "./typesafeState.js";
 
 export const GATE_NEEDED_QUESTION = "needed";
 export const GATE_EFFORT_QUESTION = "effort";
