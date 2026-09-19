@@ -319,15 +319,20 @@ cases and re-run the evaluation after changing it.
 
 ## Versioning
 
-Releases use calendar versioning (`YY.M.patch`, e.g. `26.9.0`). The Git tag
-(`v26.9.0`) must match `package.json` exactly; tag pushes publish to npm.
+Releases use calendar versioning (`YY.M.patch`, e.g. `26.9.0`). The GitHub
+Release tag (`v26.9.0`) is the source of truth: the publish workflow overwrites
+`package.json` `version` from the tag. Do not bump `version` in `package.json`
+for a release; leave it at the last published version.
 
 ## Releasing (maintainers)
 
-1. Bump `version` in `package.json` (CalVer `YY.M.patch`), commit, push to
-   `master`, and wait for CI to pass.
-2. Tag and push: `git tag -a vYY.M.patch -m "@pfoundation/ocadvisor vYY.M.patch" && git push origin vYY.M.patch`
-3. The `publish` workflow validates the tag, re-runs every gate, and
-   publishes via OIDC trusted publishing (no npm token). `v*` tag creation
-   is restricted to maintainers by a ruleset.
+1. Land the change on `master` and wait for CI to pass. Leave `package.json`
+   `version` as the last published release.
+2. Cut a GitHub Release on tag `vYY.M.patch`. Pre-releases (the release's
+   pre-release flag, or a `-suffix` version) publish under dist-tag `next`;
+   stable releases publish `--tag latest`. Pushing a tag alone publishes
+   nothing.
+3. The `publish` workflow sets the package version from the tag, re-runs
+   every gate, and publishes via OIDC trusted publishing (no npm token).
+   `v*` tag creation is restricted to maintainers by a ruleset.
 4. Verify: `npm view @pfoundation/ocadvisor@YY.M.patch`.
