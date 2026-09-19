@@ -52,6 +52,7 @@ transcript cap, and TypeSafe screening on when a key is present.
 | `timeoutMs` | `300000` | Per-consultation generation timeout, in milliseconds |
 | `maxTranscriptChars` | `0` | Cap on transcript size (`0` = unlimited); the most recent tail is kept |
 | `agentEffort` | `false` | Let the agent pick effort per call: `true` allows `high`, `xhigh`, `max`; an array or comma string sets an explicit allow-list |
+| `disabledForModels` | `[]` | Exact caller `provider/model` IDs that must not see or invoke advisor. Applies to every effort variant of that ID. A string array is the documented form; a comma-separated string is also accepted |
 | `typesafe` | enabled with a key | `false` disables screening; `true` or an object enables it (see below) |
 
 Set them as plugin options in `opencode.json`. Because a plugin loaded from
@@ -88,15 +89,54 @@ With `agentEffort` enabled the tool accepts an optional `effort` argument
 model fails the call with an `invalid_effort` error instead of silently
 falling back.
 
+To hide advisor from selected *caller* models (for example Astra), list
+their exact `provider/model` IDs. This is independent of `model` /
+`provider`, which configure the advisor itself:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "@pfoundation/ocadvisor",
+      "options": {
+        "disabledForModels": ["openai/gpt-6-astra"]
+      }
+    }
+  ]
+}
+```
+
+Matching is exact and case-sensitive on `provider/model`. Effort variants
+are ignored, so `openai/gpt-6-astra#xhigh` is still excluded by
+`openai/gpt-6-astra`. Nearby names (`openai/gpt-6-astra-preview`) and other
+providers do not match. Gateway IDs keep the serving provider: list
+`openrouter/openai/gpt-6-astra` to exclude that route, not
+`openai/gpt-6-astra`. Bare names, `#variant` suffixes, and wildcards are
+rejected at config load.
+
+Plugin options replace the environment list rather than merging it. An
+explicit `[]` (or a blank string) clears configurable exclusions even when
+`OCADVISOR_DISABLED_FOR_MODELS` is set:
+
+```sh
+OCADVISOR_DISABLED_FOR_MODELS=openai/gpt-6-astra,anthropic/claude-opus-5
+```
+
+After changing plugin options, restart the background service
+(`opencode service restart`) so the server reloads configuration.
+
 Environment variables work for any install and take
 lower precedence than plugin options: `OCADVISOR_MODEL` (accepts
 `provider/model#variant`), `OCADVISOR_PROVIDER`, `OCADVISOR_VARIANT`,
 `OCADVISOR_TIMEOUT_MS`, `OCADVISOR_MAX_TRANSCRIPT_CHARS`,
-`OCADVISOR_AGENT_EFFORT` (`true`, `false`, or a comma-separated allow-list).
+`OCADVISOR_AGENT_EFFORT` (`true`, `false`, or a comma-separated allow-list),
+`OCADVISOR_DISABLED_FOR_MODELS` (comma-separated exact `provider/model` IDs).
 
 The "already the advisor model" skip is still keyed to Fable
 (`anthropic/claude-fable-*`); if you point the advisor at a different model,
-that self-consultation guard no longer matches it.
+that self-consultation guard no longer matches it. Fable sessions stay
+blocked even when they also appear in `disabledForModels`.
 
 ## Usage policy (what agents are told)
 
@@ -125,7 +165,11 @@ Rules enforced by the tool description and an injected session instruction:
   counter-evidence. Clear factual corrections do not need another
   confirmation call.
 - The tool is hidden in `anthropic/claude-fable-*` sessions (the current
-  model is already Fable); calls there return a disabled notice.
+  model is already Fable) and in sessions whose caller model is listed in
+  `disabledForModels`. Direct calls there return a disabled notice and do
+  not run TypeSafe screening or advisor generation. Eligibility is
+  reevaluated per request, so switching models mid-session takes effect
+  immediately; a child session uses its own model, not the parent's.
 - When the `agentEffort` plugin option is enabled, an optional `effort`
   argument selects the reasoning effort for that consultation.
 - When TypeSafe screening is active, a clearly unnecessary consultation
@@ -209,9 +253,9 @@ Behavior notes:
   TUI. As a direct tool, the TUI's tool log shows the call's `mode`,
   `trigger`, and `question` fields followed by `output:` with the answer.
   Direct calls also avoid Code Mode's output-size truncation. The `context`
-  hook can only hide the tool (Fable sessions), never add one, and the
-  selective-use instruction is injected only when the tool is available to
-  the request.
+  hook can only hide the tool (Fable sessions and `disabledForModels`
+  callers), never add one, and the selective-use instruction is injected
+  only when the tool is available to the request.
 - Before each consultation it checks OpenCode for support of the configured
   advisor model: the provider is enabled (`catalog.provider.get`), the model
   is available (`catalog.model.list`, configured variant when listed), and a
@@ -240,25 +284,31 @@ Behavior notes:
   what is new since then.
 - Real failures (provider/model/connection issues, missing
   transcript/session) throw so OpenCode records them as errors instead of
-  silent `completed` results. Fable skips still return the disabled notice.
+  silent `completed` results. Fable and configured-model skips still return
+  a disabled notice without TypeSafe or advisor requests.
 
 ## Metrics
 
 Every invocation appends one JSON line to
 `~/.local/share/opencode/ocAdvisor-metrics.jsonl` with timestamp, session,
 caller model/agent, mode, trigger, effective effort, outcome (`advisor_response`,
-`skipped_fable`, `error`, `no_transcript`, `no_session`), error type
+`skipped_fable`, `skipped_model`, `skipped_typesafe`, `error`, `no_transcript`,
+`no_session`), error type
 (`provider_unavailable`, `model_unavailable`, `invalid_effort`, `auth`, …), latency,
 transcript size, prior-consultation count, and transport (`via`).
 Token usage is `null`: OpenCode generation returns text only.
 Logging is best-effort and never breaks a call.
+When the tool is hidden for the request, there is no invocation and no
+metrics row. A direct call that still reaches the executor for an excluded
+caller records one `skipped_model` line and no TypeSafe gate field.
 
 ## Activation
 
 The server loads plugin files once per process, so after installing or
-updating the plugin restart the background service
-(`opencode service restart`) or the old code keeps running. Location
-eviction does not reload plugin files.
+updating the plugin, or after changing plugin options such as
+`disabledForModels`, restart the background service
+(`opencode service restart`) or the old code and config keep running.
+Location eviction does not reload plugin files.
 
 ## Local development install
 
@@ -293,7 +343,9 @@ bun src/usageReport.ts --days 7
 The report combines the metrics log with the session database and shows
 generated advice, skips, gate decisions, and caller results plus eligibility
 coverage (sessions with ≥10 non-Fable tool calls vs. sessions that received
-generated advice). Database and metrics views are independent and must not be
+generated advice). That coverage figure is a non-Fable activity proxy, not a
+historical reconstruction of per-location `disabledForModels` settings.
+Database and metrics views are independent and must not be
 summed: a caller entry can fail while the plugin still recorded a generated
 response, and a completed entry without visible output is reported as
 unknown rather than success. Re-run it after a few weeks of the new

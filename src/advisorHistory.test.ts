@@ -132,6 +132,71 @@ describe("queryAdvisorHistory", () => {
     expect(sessionsWithAdvice(history.calls).size).toBe(0);
   });
 
+  test("classifies model opt-out notices separately from Fable skips", () => {
+    const notice =
+      "advisor is disabled (model opt-out): openai/gpt-6-astra is listed in disabledForModels.";
+    const db = openFixtureDb();
+    addAssistant(db, "msg_1", "ses_a", START + 1000, [
+      toolBlock("call_1", {
+        status: "completed",
+        input: { mode: "general" },
+        content: [{ type: "text", text: notice }],
+        time: { ran: START + 1000 },
+      }),
+    ]);
+    addAssistant(db, "msg_2", "ses_b", START + 2000, [
+      {
+        type: "tool",
+        id: "call_nested",
+        name: "execute",
+        state: {
+          status: "completed",
+          metadata: {
+            toolCalls: [
+              {
+                tool: "ocAdvisor",
+                input: { mode: "plan", question: "Should we?" },
+                output: notice,
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    const history = queryAdvisorHistory(db, START, END);
+    expect(history.calls).toHaveLength(2);
+    expect(history.calls[0].generation).toBe("skipped_model");
+    expect(history.calls[0].caller).toBe("completed");
+    expect(history.calls[1].generation).toBe("skipped_model");
+    expect(history.calls[1].callId).toBe("call_nested");
+    expect(countGenerations(history.calls)).toEqual({ skipped_model: 2 });
+    expect(sessionsWithAdvice(history.calls).size).toBe(0);
+  });
+
+  test("prefers a model opt-out notice over an empty duplicate representation", () => {
+    const db = openFixtureDb();
+    addAssistant(db, "msg_1", "ses_a", START + 1000, [
+      toolBlock("call_same", {
+        status: "completed",
+        input: { mode: "plan" },
+        content: [],
+      }),
+      toolBlock("call_same", {
+        status: "completed",
+        input: { mode: "plan" },
+        content: [
+          {
+            type: "text",
+            text: "advisor is disabled (model opt-out): openai/gpt-6-astra is listed in disabledForModels.",
+          },
+        ],
+      }),
+    ]);
+    const history = queryAdvisorHistory(db, START, END);
+    expect(history.calls).toHaveLength(1);
+    expect(history.calls[0].generation).toBe("skipped_model");
+  });
+
   test("treats completed-without-output as unknown, never success", () => {
     const db = openFixtureDb();
     addAssistant(db, "msg_1", "ses_a", START + 1000, [
