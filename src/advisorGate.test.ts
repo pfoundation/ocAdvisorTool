@@ -225,6 +225,7 @@ function baseConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
     maxTranscriptChars: 0,
     agentEffort: ["high", "xhigh", "max"],
     disabledForModels: [],
+    benchmarks: {},
     typesafeSource: { disabled: false, overrides: {} },
     typesafe: {
       enabled: true,

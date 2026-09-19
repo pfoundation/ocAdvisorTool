@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
 import { appendFile } from "fs/promises";
 import { homedir } from "os";
-import { join } from "path";
+import { isAbsolute, join } from "path";
+import type { BenchmarkPathOptions } from "./benchmarkConfig.js";
 import {
   runTypeSafeGate,
   type GateClient,
@@ -44,7 +45,8 @@ const FABLE_DISABLED =
 // or, for symlink/auto-discovered installs that cannot receive options,
 // via environment variables (OCADVISOR_MODEL, OCADVISOR_PROVIDER,
 // OCADVISOR_VARIANT, OCADVISOR_TIMEOUT_MS, OCADVISOR_MAX_TRANSCRIPT_CHARS,
-// OCADVISOR_AGENT_EFFORT).
+// OCADVISOR_AGENT_EFFORT, OCADVISOR_BENCHMARKS_PATH,
+// OCADVISOR_BENCHMARK_MAPPINGS_PATH).
 // Defaults preserve the original behavior: anthropic/claude-fable-5-1#xhigh.
 interface AdvisorConfig {
   provider: string;
@@ -57,6 +59,10 @@ interface AdvisorConfig {
   // Matching ignores effort variants. Empty means no configured exclusions;
   // the Fable self-consultation guard still applies.
   disabledForModels: string[];
+  // Explicit benchmark file locations. Each field falls back to its
+  // environment variable, then the shared data-directory default; empty
+  // means fully default.
+  benchmarks: BenchmarkPathOptions;
   // Optional TypeSafe preflight. `typesafeSource` is the normalized plugin
   // option; `typesafe`/`typesafeSettings` hold the resolved runtime view
   // (enabled only when the SDK's own TYPESAFE_API_KEY is present).
@@ -73,6 +79,7 @@ const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = {
   maxTranscriptChars: 0,
   agentEffort: null,
   disabledForModels: [],
+  benchmarks: {},
   typesafeSource: { disabled: false, overrides: {} },
   typesafe: { enabled: false, settings: null, keyPresent: false },
   typesafeSettings: null,
@@ -89,6 +96,7 @@ interface AdvisorConfigSource {
   agentEffort?: unknown;
   agent_effort?: unknown;
   disabledForModels?: unknown;
+  benchmarks?: unknown;
   typesafe?: unknown;
 }
 
@@ -166,6 +174,33 @@ function normalizeDisabledForModels(value: unknown): string[] | undefined {
   return [...new Set(refs)];
 }
 
+// `{ path, mappingsPath }` with absolute locations. `undefined`/`null`
+// means "not set"; blank entries are dropped; unknown keys are ignored.
+// Invalid explicit values throw so misconfiguration fails fast at setup
+// instead of silently degrading to default benchmark data.
+function normalizeBenchmarks(value: unknown): BenchmarkPathOptions | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("benchmarks must be an object with path options.");
+  }
+  const raw = value as Record<string, unknown>;
+  const out: BenchmarkPathOptions = {};
+  for (const key of ["path", "mappingsPath"] as const) {
+    const entry = raw[key];
+    if (entry === undefined || entry === null) continue;
+    if (typeof entry !== "string") {
+      throw new Error(`benchmarks.${key} must be an absolute path.`);
+    }
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    if (!isAbsolute(trimmed)) {
+      throw new Error(`benchmarks.${key} must be an absolute path.`);
+    }
+    out[key] = trimmed;
+  }
+  return out;
+}
+
 function toBoundedInt(value: unknown, min: number): number | undefined {
   const raw =
     typeof value === "number"
@@ -235,6 +270,12 @@ function applyAdvisorConfigSource(
   if (disabledForModels !== undefined) {
     next.disabledForModels = disabledForModels;
   }
+  // Benchmark paths merge per field so a plugin option can override one
+  // location while the other still falls back to the environment default.
+  const benchmarks = normalizeBenchmarks(src.benchmarks);
+  if (benchmarks !== undefined) {
+    next.benchmarks = { ...next.benchmarks, ...benchmarks };
+  }
   const timeout = toBoundedInt(src.timeoutMs ?? src.timeout_ms, 1);
   if (timeout !== undefined) next.timeoutMs = timeout;
   const cap = toBoundedInt(
@@ -265,6 +306,14 @@ function envAdvisorConfigSource(
     maxTranscriptChars: env.OCADVISOR_MAX_TRANSCRIPT_CHARS,
     agentEffort: env.OCADVISOR_AGENT_EFFORT,
     disabledForModels: env.OCADVISOR_DISABLED_FOR_MODELS,
+    benchmarks:
+      env.OCADVISOR_BENCHMARKS_PATH === undefined &&
+      env.OCADVISOR_BENCHMARK_MAPPINGS_PATH === undefined
+        ? undefined
+        : {
+            path: env.OCADVISOR_BENCHMARKS_PATH,
+            mappingsPath: env.OCADVISOR_BENCHMARK_MAPPINGS_PATH,
+          },
   };
 }
 

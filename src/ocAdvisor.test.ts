@@ -1018,6 +1018,78 @@ describe("resolveAdvisorConfig", () => {
       resolveAdvisorConfig({ disabledForModels: ["openai/"] }, noEnv),
     ).toThrow(/exact provider\/model/);
   });
+
+  test("benchmarks defaults to fully default paths", () => {
+    expect(resolveAdvisorConfig(undefined, noEnv).benchmarks).toEqual({});
+    expect(resolveAdvisorConfig({}, noEnv).benchmarks).toEqual({});
+    expect(
+      resolveAdvisorConfig({ benchmarks: null }, noEnv).benchmarks,
+    ).toEqual({});
+  });
+
+  test("benchmarks accepts explicit snapshot and mapping paths", () => {
+    const config = resolveAdvisorConfig(
+      {
+        benchmarks: {
+          path: " /tmp/snap.json ",
+          mappingsPath: "/tmp/maps.json",
+        },
+      },
+      noEnv,
+    );
+    expect(config.benchmarks).toEqual({
+      path: "/tmp/snap.json",
+      mappingsPath: "/tmp/maps.json",
+    });
+  });
+
+  test("benchmarks reads from the environment with options winning per field", () => {
+    const env = {
+      OCADVISOR_BENCHMARKS_PATH: "/tmp/env/snap.json",
+      OCADVISOR_BENCHMARK_MAPPINGS_PATH: "/tmp/env/maps.json",
+    };
+    expect(resolveAdvisorConfig(undefined, env).benchmarks).toEqual({
+      path: "/tmp/env/snap.json",
+      mappingsPath: "/tmp/env/maps.json",
+    });
+    // A plugin option overrides one field while the other stays on env.
+    expect(
+      resolveAdvisorConfig({ benchmarks: { path: "/tmp/opt/snap.json" } }, env)
+        .benchmarks,
+    ).toEqual({
+      path: "/tmp/opt/snap.json",
+      mappingsPath: "/tmp/env/maps.json",
+    });
+  });
+
+  test("benchmarks drops blank entries and ignores unknown keys", () => {
+    expect(
+      resolveAdvisorConfig(
+        { benchmarks: { path: "  ", mappingsPath: null, extra: true } },
+        noEnv,
+      ).benchmarks,
+    ).toEqual({});
+  });
+
+  test("benchmarks rejects non-object and non-absolute values", () => {
+    expect(() =>
+      resolveAdvisorConfig({ benchmarks: "/tmp/snap.json" }, noEnv),
+    ).toThrow(/benchmarks must be an object/);
+    expect(() =>
+      resolveAdvisorConfig({ benchmarks: { path: 42 } }, noEnv),
+    ).toThrow(/benchmarks\.path must be an absolute path/);
+    expect(() =>
+      resolveAdvisorConfig(
+        { benchmarks: { mappingsPath: "relative/maps.json" } },
+        noEnv,
+      ),
+    ).toThrow(/benchmarks\.mappingsPath must be an absolute path/);
+    expect(() =>
+      resolveAdvisorConfig(undefined, {
+        OCADVISOR_BENCHMARKS_PATH: "relative/snap.json",
+      }),
+    ).toThrow(/benchmarks\.path must be an absolute path/);
+  });
 });
 
 describe("advisorDisabledReason", () => {
@@ -1198,6 +1270,7 @@ describe("model helpers honor a custom config", () => {
     maxTranscriptChars: 0,
     agentEffort: null,
     disabledForModels: [],
+    benchmarks: {},
     typesafeSource: { disabled: false, overrides: {} },
     typesafe: { enabled: false, settings: null, keyPresent: false },
     typesafeSettings: null,
