@@ -23,6 +23,9 @@
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "ocadvisor": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -44,7 +47,7 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && bun scripts/copyBenchmarkData.ts && chmod +x dist/cli.js",
     "prepack": "bun run build",
     "prepublishOnly": "bun test && bun run typecheck",
     "report": "bun src/usageReport.ts --days 30"

@@ -12,7 +12,8 @@
     "src/index.ts",
     "src/ocAdvisor.ts",
     "src/typesafeGate.ts",
-    "src/typesafeState.ts"
+    "src/typesafeState.ts",
+    "src/cli.ts"
   ],
   "exclude": [
     "src/**/*.test.ts",
