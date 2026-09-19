@@ -536,11 +536,11 @@ describe("ensureAdvisorSession", () => {
 });
 
 describe("checkpoint guidance", () => {
-  test("tool description names the modes and the one-call policy", () => {
-    expect(TOOL_DESCRIPTION).toContain('"plan"');
-    expect(TOOL_DESCRIPTION).toContain('"debug"');
-    expect(TOOL_DESCRIPTION).toContain('"review"');
-    expect(TOOL_DESCRIPTION).toContain("AT MOST ONE");
+  test("tool description names the modes and the value-based policy", () => {
+    expect(TOOL_DESCRIPTION).toContain("general, review, plan, debug");
+    expect(TOOL_DESCRIPTION).toContain("Additional consultations are welcome");
+    expect(TOOL_DESCRIPTION).not.toContain("AT MOST ONE");
+    expect(TOOL_DESCRIPTION).not.toContain("0-1");
     expect(TOOL_DESCRIPTION).toContain("followup");
     expect(TOOL_DESCRIPTION).not.toContain("ocAdvisor");
   });
@@ -549,6 +549,8 @@ describe("checkpoint guidance", () => {
     expect(CHECKPOINT_INSTRUCTION.length).toBeLessThan(600);
     expect(CHECKPOINT_INSTRUCTION).toContain("advisor");
     expect(CHECKPOINT_INSTRUCTION).toContain("review");
+    expect(CHECKPOINT_INSTRUCTION).not.toContain("0-1");
+    expect(CHECKPOINT_INSTRUCTION).not.toContain("at most one");
     expect(CHECKPOINT_INSTRUCTION).not.toContain("ocAdvisor");
   });
 });

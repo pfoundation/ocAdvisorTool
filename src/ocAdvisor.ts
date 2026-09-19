@@ -260,15 +260,17 @@ You are a debugger. Analyze error patterns, stack traces, and failed attempts in
 
 const TOOL_DESCRIPTION = `Consult a senior advisor model with your full session transcript — including parent sessions for subagents — for high-quality analysis.
 
-Use advisor selectively on substantial, non-trivial work. Straightforward tasks normally need no consultation.
+Use advisor when an independent perspective could improve the approach, help resolve a problem, or strengthen an implementation review.
 
-- Normally make AT MOST ONE consultation per task, at the point where a second opinion has the most value: a consequential unresolved design decision (mode "plan"), a blocker after two substantially different attempts (mode "debug"), or a high-risk change with a specific unresolved correctness concern (mode "review"). Pick one stage, not all three.
-- mode "general": a second opinion that does not fit the above.
+On substantial work, consider consulting before committing to an approach, when progress stalls, or before completing meaningful changes. Additional consultations are welcome as the work evolves — particularly when new evidence appears, the approach changes, or another concern needs review.
+
+Ask a concrete, focused question. Avoid repeating settled questions without new context. Straightforward tasks usually need no consultation.
 
 Rules:
 - Always pass a concrete "question" naming the decision or artifact under review.
-- A second consultation requires material new evidence, a distinct unresolved issue, or an explicit user request. Reconcile an advisor conflict with primary-source evidence via one "followup" call stating both sides.
+- Reconcile an advisor conflict with primary-source evidence via one "followup" call stating both sides.
 - Give the advice serious weight. A passing self-test alone is not counter-evidence; primary-source evidence (the file says X) is. Clear factual corrections do not need another confirmation call.
+- When TypeSafe screening is enabled, a clearly unnecessary consultation returns a skip notice instead of advice, and an omitted effort may be chosen for you.
 
 Args: "mode" (general, review, plan, debug), "trigger" (before_approach, stuck, pre_complete, followup, other), "question" (concrete question focusing the advisor).
 `;
@@ -287,7 +289,7 @@ function buildToolDescription(
   );
 }
 
-const CHECKPOINT_INSTRUCTION = `[advisor] Use advisor selectively on substantial work: normally 0-1 consultations per task, at most one unless material new evidence, a distinct unresolved issue, or an explicit user request. Consult for a consequential undecided design (mode "plan"), a blocker after 2+ different attempts (mode "debug"), or a high-risk change with a specific correctness concern (mode "review"). Always pass a concrete question.`;
+const CHECKPOINT_INSTRUCTION = `[advisor] Consult advisor when an independent perspective would improve the approach, help resolve a problem, or strengthen review. Use useful checkpoints during substantial work; additional consultations are welcome when evidence, approach, or concerns change. Ask a concrete question and avoid repeating settled questions without new context.`;
 
 const ADVISOR_TRIGGERS = [
   "before_approach",
