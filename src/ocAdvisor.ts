@@ -346,6 +346,7 @@ type AdvisorTrigger = (typeof ADVISOR_TRIGGERS)[number];
 type AdvisorOutcome =
   | "advisor_response"
   | "skipped_fable"
+  | "skipped_model"
   | "skipped_typesafe"
   | "error"
   | "no_transcript"
@@ -1772,7 +1773,8 @@ async function runAdvisor(opts: {
     const callerAgent = opts.callerAgent || info?.agent || null;
     const directory = opts.callerDirectory || info?.directory || null;
 
-    if (isFableModel(info?.model)) {
+    const disabled = advisorDisabledReason(info?.model, config);
+    if (disabled) {
       await logAdvisorMetrics(opts.runtime, {
         ts: new Date().toISOString(),
         sessionId,
@@ -1783,7 +1785,7 @@ async function runAdvisor(opts: {
         trigger,
         questionChars,
         effort: null,
-        outcome: "skipped_fable",
+        outcome: disabled.outcome,
         errorType: null,
         latencyMs: Date.now() - started,
         inputTokens: null,
@@ -1793,9 +1795,9 @@ async function runAdvisor(opts: {
         via: "opencode-session",
       });
       console.log(
-        `[advisor] session=${sessionId} mode=${mode} outcome=skipped_fable (already Fable)`,
+        `[advisor] session=${sessionId} mode=${mode} outcome=${disabled.outcome}`,
       );
-      return FABLE_DISABLED;
+      return disabled.message;
     }
 
     let transcript = buildTranscript(db, sessionId);
@@ -2074,15 +2076,17 @@ export async function setupOcAdvisorV2(
         if (!event.tools) return;
         // `event.tools` lists the direct tools available to this request.
         // OpenCode drops entries a hook adds for tools it did not register,
-        // so the hook can only hide the tool (Fable sessions), never add it.
-        // The checkpoint instruction is injected only when the tool is
-        // actually available, e.g. not when a permission rule removed it.
+        // so the hook can only hide the tool (Fable or opted-out sessions),
+        // never add it. The checkpoint instruction is injected only when
+        // the tool is actually available, e.g. not when a permission rule
+        // removed it.
+        const disabled = advisorDisabledReason(event.model, advisorConfig);
         let available = false;
         for (const key of Object.keys(event.tools)) {
           if (!isAdvisorToolName(key)) {
             continue;
           }
-          if (isFableModel(event.model)) {
+          if (disabled) {
             delete event.tools[key];
           } else {
             available = true;

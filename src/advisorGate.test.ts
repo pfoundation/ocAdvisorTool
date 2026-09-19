@@ -107,8 +107,25 @@ function runtimeWith(options: {
   generate?: (request: Record<string, unknown>) => Promise<unknown>;
   agentEffort?: string[] | null;
   variant?: string | undefined;
-}): { runtime: V2PluginContext; generated: Array<Record<string, unknown>> } {
+}): {
+  runtime: V2PluginContext;
+  generated: Array<Record<string, unknown>>;
+  counts: {
+    providerGet: number;
+    modelList: number;
+    connectionActive: number;
+    sessionCreate: number;
+    switchModel: number;
+  };
+} {
   const generated: Array<Record<string, unknown>> = [];
+  const counts = {
+    providerGet: 0,
+    modelList: 0,
+    connectionActive: 0,
+    sessionCreate: 0,
+    switchModel: 0,
+  };
   const runtime = {
     __advisorTest: {
       gateClient: options.gateClient,
@@ -118,24 +135,38 @@ function runtimeWith(options: {
     },
     catalog: {
       provider: {
-        get: async () => ({ activation: "enabled" }),
+        get: async () => {
+          counts.providerGet++;
+          return { activation: "enabled" };
+        },
       },
       model: {
-        list: async () => [
-          {
-            providerID: "anthropic",
-            id: "claude-fable-5-1",
-            enabled: true,
-            variants: [{ id: "high" }, { id: "xhigh" }, { id: "max" }],
-          },
-        ],
+        list: async () => {
+          counts.modelList++;
+          return [
+            {
+              providerID: "anthropic",
+              id: "claude-fable-5-1",
+              enabled: true,
+              variants: [{ id: "high" }, { id: "xhigh" }, { id: "max" }],
+            },
+          ];
+        },
       },
     },
     integration: {
-      connection: { active: async () => ({ status: "connected" }) },
+      connection: {
+        active: async () => {
+          counts.connectionActive++;
+          return { status: "connected" };
+        },
+      },
     },
     session: {
-      create: async () => ({ id: "ses_advisor_fixture" }),
+      create: async () => {
+        counts.sessionCreate++;
+        return { id: "ses_advisor_fixture" };
+      },
       get: async () => ({
         id: "ses_advisor_fixture",
         model: {
@@ -144,7 +175,9 @@ function runtimeWith(options: {
           variant: "xhigh",
         },
       }),
-      switchModel: async () => {},
+      switchModel: async () => {
+        counts.switchModel++;
+      },
       generate: async (request: Record<string, unknown>) => {
         generated.push(request);
         return options.generate
@@ -153,7 +186,34 @@ function runtimeWith(options: {
       },
     },
   } as unknown as V2PluginContext;
-  return { runtime, generated };
+  return { runtime, generated, counts };
+}
+
+function setSessionModel(
+  sessionId: string,
+  model: { providerID: string; id: string },
+): void {
+  const db = new Database(dbPath);
+  db.query("UPDATE session_v2 SET model = ? WHERE id = ?").run(
+    JSON.stringify(model),
+    sessionId,
+  );
+  db.close();
+}
+
+function insertChildSession(
+  sessionId: string,
+  parentId: string,
+  model: { providerID: string; id: string },
+): void {
+  const db = new Database(dbPath);
+  db.query(
+    "INSERT INTO session_v2 (id, parent_id, title, model, agent, directory) VALUES (?,?,?,?,?,?)",
+  ).run(sessionId, parentId, "Child", JSON.stringify(model), "explore", dir);
+  db.query(
+    "INSERT INTO session_message (session_id, type, seq, data) VALUES (?,?,?,?)",
+  ).run(sessionId, "user", 1, JSON.stringify({ text: "Child question" }));
+  db.close();
 }
 
 function baseConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
@@ -447,5 +507,172 @@ describe("runAdvisor with the TypeSafe gate", () => {
     expect(generated.length).toBe(0);
     const records = metricRecords();
     expect(records[0].outcome).toBe("skipped_fable");
+  });
+
+  test("skips configured caller models before TypeSafe or generation", async () => {
+    const { client, calls } = stubGate(gateResponse(0.9));
+    const { runtime, generated, counts } = runtimeWith({
+      gateClient: client,
+    });
+    setSessionModel("ses_fixture", {
+      providerID: "openai",
+      id: "gpt-6-astra",
+    });
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "plan",
+      trigger: "before_approach",
+      question: "Should we consult?",
+      config: baseConfig({
+        disabledForModels: ["openai/gpt-6-astra"],
+      }),
+    });
+    expect(text).toBe(
+      "advisor is disabled (model opt-out): openai/gpt-6-astra is listed in disabledForModels.",
+    );
+    expect(calls.length).toBe(0);
+    expect(generated.length).toBe(0);
+    expect(counts).toEqual({
+      providerGet: 0,
+      modelList: 0,
+      connectionActive: 0,
+      sessionCreate: 0,
+      switchModel: 0,
+    });
+    const records = metricRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].outcome).toBe("skipped_model");
+    expect(records[0].errorType).toBeNull();
+    expect(records[0].effort).toBeNull();
+    expect(records[0].transcriptChars).toBe(0);
+    expect(records[0].priorConsultations).toBe(0);
+    expect(records[0].gate).toBeUndefined();
+    expect(records[0].callerModel).toBe("openai/gpt-6-astra");
+  });
+
+  test("blocks an excluded caller even when the transcript is empty", async () => {
+    const { client, calls } = stubGate(gateResponse(0.9));
+    const { runtime, generated } = runtimeWith({ gateClient: client });
+    setSessionModel("ses_fixture", {
+      providerID: "openai",
+      id: "gpt-6-astra",
+    });
+    const db = new Database(dbPath);
+    db.query("DELETE FROM session_message WHERE session_id = ?").run(
+      "ses_fixture",
+    );
+    db.close();
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Anything",
+      config: baseConfig({
+        disabledForModels: ["openai/gpt-6-astra"],
+      }),
+    });
+    expect(text).toContain("model opt-out");
+    expect(calls.length).toBe(0);
+    expect(generated.length).toBe(0);
+    expect(metricRecords()[0].outcome).toBe("skipped_model");
+  });
+
+  test("uses each session's own caller model, not the parent", async () => {
+    const { client, calls } = stubGate(gateResponse(0.9));
+    const { runtime, generated } = runtimeWith({ gateClient: client });
+    setSessionModel("ses_fixture", {
+      providerID: "openai",
+      id: "gpt-6-astra",
+    });
+    insertChildSession("ses_child", "ses_fixture", {
+      providerID: "meta",
+      id: "muse-spark-1.3",
+    });
+    const config = baseConfig({
+      disabledForModels: ["openai/gpt-6-astra"],
+    });
+    const parentText = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Parent",
+      config,
+    });
+    expect(parentText).toContain("model opt-out");
+    const childText = await runAdvisor({
+      runtime,
+      sessionId: "ses_child",
+      mode: "general",
+      question: "Child",
+      config,
+    });
+    expect(childText).toContain("advisor answer");
+    expect(calls.length).toBe(1);
+    expect(generated.length).toBe(1);
+    expect(metricRecords().map((row) => row.outcome)).toEqual([
+      "skipped_model",
+      "advisor_response",
+    ]);
+  });
+
+  test("blocks a child whose own model is excluded", async () => {
+    const { client, calls } = stubGate(gateResponse(0.9));
+    const { runtime, generated } = runtimeWith({ gateClient: client });
+    insertChildSession("ses_child", "ses_fixture", {
+      providerID: "openai",
+      id: "gpt-6-astra",
+    });
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_child",
+      mode: "general",
+      question: "Child",
+      config: baseConfig({
+        disabledForModels: ["openai/gpt-6-astra"],
+      }),
+    });
+    expect(text).toContain("model opt-out");
+    expect(calls.length).toBe(0);
+    expect(generated.length).toBe(0);
+    expect(metricRecords()[0].outcome).toBe("skipped_model");
+  });
+
+  test("rereads the caller model after a session switch", async () => {
+    const { client, calls } = stubGate(gateResponse(0.9));
+    const { runtime, generated } = runtimeWith({ gateClient: client });
+    const config = baseConfig({
+      disabledForModels: ["openai/gpt-6-astra"],
+    });
+    setSessionModel("ses_fixture", {
+      providerID: "openai",
+      id: "gpt-6-astra",
+    });
+    const blocked = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "First",
+      config,
+    });
+    expect(blocked).toContain("model opt-out");
+    setSessionModel("ses_fixture", {
+      providerID: "meta",
+      id: "muse-spark-1.3",
+    });
+    const allowed = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Second",
+      config,
+    });
+    expect(allowed).toContain("advisor answer");
+    expect(calls.length).toBe(1);
+    expect(generated.length).toBe(1);
+    expect(metricRecords().map((row) => row.outcome)).toEqual([
+      "skipped_model",
+      "advisor_response",
+    ]);
   });
 });

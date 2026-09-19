@@ -593,16 +593,17 @@ describe("tool registration", () => {
 });
 
 describe("context hook", () => {
-  async function captureHook() {
+  async function captureHook(options?: Record<string, unknown>) {
     let handler: ((event: any) => void) | undefined;
-    const ctx: V2PluginContext = {
+    const ctx = {
+      options,
       session: {
         hook: async (name: string, fn: (event: any) => void) => {
           if (name === "context") handler = fn;
           return { dispose: () => {} };
         },
       },
-    };
+    } as unknown as V2PluginContext;
     await setupOcAdvisorV2(ctx);
     if (!handler) throw new Error("context hook was not registered");
     return handler;
@@ -656,6 +657,82 @@ describe("context hook", () => {
     expect(event.tools.advisor).toBeUndefined();
     expect(event.tools.ocAdvisor).toBeUndefined();
     expect(event.system).toHaveLength(1);
+  });
+
+  test("hides advisor tools for configured caller models", async () => {
+    const handler = await captureHook({
+      disabledForModels: ["openai/gpt-6-astra"],
+    });
+    const read = { description: "read", input: {} };
+    const event = {
+      model: { providerID: "openai", id: "gpt-6-astra", variant: "xhigh" },
+      tools: {
+        advisor: { description: "x", input: {} },
+        ocAdvisor: { description: "legacy", input: {} },
+        read,
+      } as Record<string, unknown>,
+      system: [{ type: "text", text: "base prompt" }],
+    };
+    handler(event);
+    expect(event.tools.advisor).toBeUndefined();
+    expect(event.tools.ocAdvisor).toBeUndefined();
+    expect(event.tools.read).toBe(read);
+    expect(event.system).toHaveLength(1);
+  });
+
+  test("reevaluates eligibility per request without mutating later snapshots", async () => {
+    const handler = await captureHook({
+      disabledForModels: ["openai/gpt-6-astra"],
+    });
+    const allowedTool = { description: "x", input: {} };
+    const allowed = {
+      model: { providerID: "xai", id: "grok-4.6" },
+      tools: { advisor: allowedTool } as Record<string, unknown>,
+      system: [{ type: "text", text: "base prompt" }],
+    };
+    handler(allowed);
+    expect(allowed.tools.advisor).toBe(allowedTool);
+    expect(allowed.system).toHaveLength(2);
+
+    const excluded = {
+      model: { providerID: "openai", id: "gpt-6-astra" },
+      tools: {
+        advisor: { description: "x", input: {} },
+        ocAdvisor: { description: "legacy", input: {} },
+      } as Record<string, unknown>,
+      system: [{ type: "text", text: "base prompt" }],
+    };
+    handler(excluded);
+    expect(excluded.tools.advisor).toBeUndefined();
+    expect(excluded.tools.ocAdvisor).toBeUndefined();
+    expect(excluded.system).toHaveLength(1);
+    expect(allowed.tools.advisor).toBe(allowedTool);
+
+    const restoredTool = { description: "restored", input: {} };
+    const restored = {
+      model: { providerID: "xai", id: "grok-4.6" },
+      tools: { advisor: restoredTool } as Record<string, unknown>,
+      system: [{ type: "text", text: "base prompt" }],
+    };
+    handler(restored);
+    expect(restored.tools.advisor).toBe(restoredTool);
+    expect(restored.system).toHaveLength(2);
+  });
+
+  test("does not throw when an excluded request has no system parts", async () => {
+    const handler = await captureHook({
+      disabledForModels: ["openai/gpt-6-astra"],
+    });
+    const event = {
+      model: { providerID: "openai", id: "gpt-6-astra" },
+      tools: { advisor: { description: "x", input: {} } } as Record<
+        string,
+        unknown
+      >,
+    };
+    handler(event);
+    expect(event.tools.advisor).toBeUndefined();
+    expect("system" in event).toBe(false);
   });
 });
 
