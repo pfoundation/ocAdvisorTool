@@ -53,6 +53,10 @@ interface AdvisorConfig {
   timeoutMs: number;
   maxTranscriptChars: number;
   agentEffort: string[] | null;
+  // Exact caller `provider/model` IDs that must not see or invoke advisor.
+  // Matching ignores effort variants. Empty means no configured exclusions;
+  // the Fable self-consultation guard still applies.
+  disabledForModels: string[];
   // Optional TypeSafe preflight. `typesafeSource` is the normalized plugin
   // option; `typesafe`/`typesafeSettings` hold the resolved runtime view
   // (enabled only when the SDK's own TYPESAFE_API_KEY is present).
@@ -68,6 +72,7 @@ const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = {
   timeoutMs: ADVISOR_TIMEOUT_MS,
   maxTranscriptChars: 0,
   agentEffort: null,
+  disabledForModels: [],
   typesafeSource: { disabled: false, overrides: {} },
   typesafe: { enabled: false, settings: null, keyPresent: false },
   typesafeSettings: null,
@@ -83,6 +88,7 @@ interface AdvisorConfigSource {
   max_transcript_chars?: unknown;
   agentEffort?: unknown;
   agent_effort?: unknown;
+  disabledForModels?: unknown;
   typesafe?: unknown;
 }
 
@@ -126,6 +132,38 @@ function normalizeAgentEffort(value: unknown): string[] | null | undefined {
     );
   }
   return undefined;
+}
+
+// Exact `provider/model` IDs. A string is split on commas; blanks are
+// dropped. `undefined` means "not set" so a later source can keep the
+// previous list. An empty array or whitespace-only string clears it.
+function normalizeDisabledForModels(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  const entries = typeof value === "string" ? value.split(",") : value;
+  if (
+    !Array.isArray(entries) ||
+    entries.some((entry) => typeof entry !== "string")
+  ) {
+    throw new Error(
+      "disabledForModels must be a string array or comma-separated string.",
+    );
+  }
+  const refs = entries.map((entry: string) => entry.trim()).filter(Boolean);
+  for (const ref of refs) {
+    const slash = ref.indexOf("/");
+    if (
+      slash <= 0 ||
+      slash === ref.length - 1 ||
+      ref.endsWith("/") ||
+      ref.includes("//") ||
+      /[\s#*?]/u.test(ref)
+    ) {
+      throw new Error(
+        "disabledForModels requires exact provider/model IDs without variants or wildcards.",
+      );
+    }
+  }
+  return [...new Set(refs)];
 }
 
 function toBoundedInt(value: unknown, min: number): number | undefined {
@@ -193,6 +231,10 @@ function applyAdvisorConfigSource(
     const normalized = normalizeAgentEffort(agentEffort);
     if (normalized !== undefined) next.agentEffort = normalized;
   }
+  const disabledForModels = normalizeDisabledForModels(src.disabledForModels);
+  if (disabledForModels !== undefined) {
+    next.disabledForModels = disabledForModels;
+  }
   const timeout = toBoundedInt(src.timeoutMs ?? src.timeout_ms, 1);
   if (timeout !== undefined) next.timeoutMs = timeout;
   const cap = toBoundedInt(
@@ -222,6 +264,7 @@ function envAdvisorConfigSource(
     timeoutMs: env.OCADVISOR_TIMEOUT_MS,
     maxTranscriptChars: env.OCADVISOR_MAX_TRANSCRIPT_CHARS,
     agentEffort: env.OCADVISOR_AGENT_EFFORT,
+    disabledForModels: env.OCADVISOR_DISABLED_FOR_MODELS,
   };
 }
 
@@ -497,6 +540,38 @@ function isFableModel(
   ).toLowerCase();
   const id = String(model.id || model.modelID || "").toLowerCase();
   return provider.includes("anthropic") && id.includes("fable");
+}
+
+type AdvisorDisabledReason = {
+  outcome: "skipped_fable" | "skipped_model";
+  message: string;
+};
+
+function advisorDisabledReason(
+  model:
+    | {
+        providerID?: string;
+        provider?: string;
+        id?: string;
+        modelID?: string;
+        variant?: string;
+      }
+    | null
+    | undefined,
+  config: AdvisorConfig,
+): AdvisorDisabledReason | null {
+  if (isFableModel(model)) {
+    return { outcome: "skipped_fable", message: FABLE_DISABLED };
+  }
+  const provider = model?.providerID || model?.provider;
+  const id = model?.id || model?.modelID;
+  if (!provider || !id) return null;
+  const ref = `${provider}/${id}`;
+  if (!config.disabledForModels.includes(ref)) return null;
+  return {
+    outcome: "skipped_model",
+    message: `advisor is disabled (model opt-out): ${ref} is listed in disabledForModels.`,
+  };
 }
 
 function inferTrigger(
@@ -2055,6 +2130,7 @@ export {
   extractGeneratedText,
   findAdvisorModel,
   hasAdvisorConnection,
+  advisorDisabledReason,
   inferTrigger,
   isAdvisorToolName,
   isFableModel,

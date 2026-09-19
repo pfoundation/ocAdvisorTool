@@ -164,6 +164,7 @@ function baseConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
     timeoutMs: 5000,
     maxTranscriptChars: 0,
     agentEffort: ["high", "xhigh", "max"],
+    disabledForModels: [],
     typesafeSource: { disabled: false, overrides: {} },
     typesafe: {
       enabled: true,

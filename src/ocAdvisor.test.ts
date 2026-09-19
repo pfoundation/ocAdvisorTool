@@ -13,6 +13,7 @@ import {
   extractGeneratedText,
   findAdvisorModel,
   hasAdvisorConnection,
+  advisorDisabledReason,
   inferTrigger,
   isAdvisorToolName,
   isFableModel,
@@ -827,6 +828,212 @@ describe("resolveAdvisorConfig", () => {
       ).agentEffort,
     ).toBeNull();
   });
+
+  test("disabledForModels defaults to an empty list", () => {
+    expect(resolveAdvisorConfig(undefined, noEnv).disabledForModels).toEqual(
+      [],
+    );
+    expect(resolveAdvisorConfig({}, noEnv).disabledForModels).toEqual([]);
+  });
+
+  test("disabledForModels accepts a string array or comma string", () => {
+    expect(
+      resolveAdvisorConfig({ disabledForModels: ["openai/gpt-6-astra"] }, noEnv)
+        .disabledForModels,
+    ).toEqual(["openai/gpt-6-astra"]);
+    expect(
+      resolveAdvisorConfig(
+        { disabledForModels: "openai/gpt-6-astra,anthropic/claude-opus-5" },
+        noEnv,
+      ).disabledForModels,
+    ).toEqual(["openai/gpt-6-astra", "anthropic/claude-opus-5"]);
+  });
+
+  test("disabledForModels trims, drops blanks, and dedupes in order", () => {
+    expect(
+      resolveAdvisorConfig(
+        {
+          disabledForModels: [
+            " openai/gpt-6-astra ",
+            "",
+            "openai/gpt-6-astra",
+            "anthropic/claude-opus-5",
+          ],
+        },
+        noEnv,
+      ).disabledForModels,
+    ).toEqual(["openai/gpt-6-astra", "anthropic/claude-opus-5"]);
+    expect(
+      resolveAdvisorConfig(
+        { disabledForModels: " openai/gpt-6-astra , , openai/gpt-6-astra " },
+        noEnv,
+      ).disabledForModels,
+    ).toEqual(["openai/gpt-6-astra"]);
+  });
+
+  test("disabledForModels empty plugin values clear the environment list", () => {
+    const env = {
+      OCADVISOR_DISABLED_FOR_MODELS: "openai/gpt-6-astra",
+    };
+    expect(resolveAdvisorConfig(undefined, env).disabledForModels).toEqual([
+      "openai/gpt-6-astra",
+    ]);
+    expect(
+      resolveAdvisorConfig({ disabledForModels: [] }, env).disabledForModels,
+    ).toEqual([]);
+    expect(
+      resolveAdvisorConfig({ disabledForModels: "  " }, env).disabledForModels,
+    ).toEqual([]);
+  });
+
+  test("disabledForModels plugin values replace the environment list", () => {
+    const env = {
+      OCADVISOR_DISABLED_FOR_MODELS: "openai/gpt-6-astra,xai/grok-4.6",
+    };
+    expect(
+      resolveAdvisorConfig(
+        { disabledForModels: ["anthropic/claude-opus-5"] },
+        env,
+      ).disabledForModels,
+    ).toEqual(["anthropic/claude-opus-5"]);
+  });
+
+  test("disabledForModels accepts unknown well-formed and gateway IDs", () => {
+    expect(
+      resolveAdvisorConfig(
+        {
+          disabledForModels: [
+            "acme/unknown-reasoner",
+            "openrouter/openai/gpt-6-astra",
+          ],
+        },
+        noEnv,
+      ).disabledForModels,
+    ).toEqual(["acme/unknown-reasoner", "openrouter/openai/gpt-6-astra"]);
+  });
+
+  test("disabledForModels rejects invalid types and members", () => {
+    expect(() => resolveAdvisorConfig({ disabledForModels: 1 }, noEnv)).toThrow(
+      /disabledForModels/,
+    );
+    expect(() =>
+      resolveAdvisorConfig({ disabledForModels: [1] }, noEnv),
+    ).toThrow(/disabledForModels/);
+    expect(() =>
+      resolveAdvisorConfig({ disabledForModels: null }, noEnv),
+    ).toThrow(/disabledForModels/);
+  });
+
+  test("disabledForModels rejects bare names, variants, and wildcards", () => {
+    expect(() =>
+      resolveAdvisorConfig({ disabledForModels: ["gpt-6-astra"] }, noEnv),
+    ).toThrow(/exact provider\/model/);
+    expect(() =>
+      resolveAdvisorConfig(
+        { disabledForModels: ["openai/gpt-6-astra#xhigh"] },
+        noEnv,
+      ),
+    ).toThrow(/exact provider\/model/);
+    expect(() =>
+      resolveAdvisorConfig({ disabledForModels: ["openai/*"] }, noEnv),
+    ).toThrow(/exact provider\/model/);
+    expect(() =>
+      resolveAdvisorConfig({ disabledForModels: ["openai/"] }, noEnv),
+    ).toThrow(/exact provider\/model/);
+  });
+});
+
+describe("advisorDisabledReason", () => {
+  const astraConfig: AdvisorConfig = {
+    ...DEFAULT_ADVISOR_CONFIG,
+    disabledForModels: ["openai/gpt-6-astra"],
+  };
+
+  test("matches the exact caller provider/model and ignores effort", () => {
+    expect(
+      advisorDisabledReason(
+        { providerID: "openai", id: "gpt-6-astra", variant: "xhigh" },
+        astraConfig,
+      ),
+    ).toEqual({
+      outcome: "skipped_model",
+      message:
+        "advisor is disabled (model opt-out): openai/gpt-6-astra is listed in disabledForModels.",
+    });
+    expect(
+      advisorDisabledReason(
+        { providerID: "openai", id: "gpt-6-astra" },
+        astraConfig,
+      )?.outcome,
+    ).toBe("skipped_model");
+  });
+
+  test("does not match nearby names or a different provider", () => {
+    expect(
+      advisorDisabledReason(
+        { providerID: "openai", id: "gpt-6-astra-preview" },
+        astraConfig,
+      ),
+    ).toBeNull();
+    expect(
+      advisorDisabledReason(
+        { providerID: "openrouter", id: "gpt-6-astra" },
+        astraConfig,
+      ),
+    ).toBeNull();
+  });
+
+  test("matches gateway IDs only when the full provider/model is listed", () => {
+    const gateway = {
+      ...DEFAULT_ADVISOR_CONFIG,
+      disabledForModels: ["openrouter/openai/gpt-6-astra"],
+    };
+    expect(
+      advisorDisabledReason(
+        { providerID: "openrouter", id: "openai/gpt-6-astra" },
+        gateway,
+      )?.outcome,
+    ).toBe("skipped_model");
+    expect(
+      advisorDisabledReason(
+        { providerID: "openrouter", id: "openai/gpt-6-astra" },
+        astraConfig,
+      ),
+    ).toBeNull();
+  });
+
+  test("reads alternate provider and modelID fields", () => {
+    expect(
+      advisorDisabledReason(
+        { provider: "openai", modelID: "gpt-6-astra" },
+        astraConfig,
+      )?.outcome,
+    ).toBe("skipped_model");
+  });
+
+  test("does not match when provider or model is missing", () => {
+    expect(advisorDisabledReason(null, astraConfig)).toBeNull();
+    expect(advisorDisabledReason({}, astraConfig)).toBeNull();
+    expect(
+      advisorDisabledReason({ providerID: "openai" }, astraConfig),
+    ).toBeNull();
+    expect(
+      advisorDisabledReason({ id: "gpt-6-astra" }, astraConfig),
+    ).toBeNull();
+  });
+
+  test("keeps the Fable skip ahead of a configured exclusion", () => {
+    const listed = {
+      ...DEFAULT_ADVISOR_CONFIG,
+      disabledForModels: ["anthropic/claude-fable-5-1"],
+    };
+    const reason = advisorDisabledReason(
+      { providerID: "anthropic", id: "claude-fable-5-1" },
+      listed,
+    );
+    expect(reason?.outcome).toBe("skipped_fable");
+    expect(reason?.message).toContain("already Fable");
+  });
 });
 
 describe("resolveRequestedEffort", () => {
@@ -913,6 +1120,7 @@ describe("model helpers honor a custom config", () => {
     timeoutMs: 300000,
     maxTranscriptChars: 0,
     agentEffort: null,
+    disabledForModels: [],
     typesafeSource: { disabled: false, overrides: {} },
     typesafe: { enabled: false, settings: null, keyPresent: false },
     typesafeSettings: null,
