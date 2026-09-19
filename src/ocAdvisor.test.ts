@@ -911,6 +911,9 @@ describe("model helpers honor a custom config", () => {
     timeoutMs: 300000,
     maxTranscriptChars: 0,
     agentEffort: null,
+    typesafeSource: { disabled: false, overrides: {} },
+    typesafe: { enabled: false, settings: null, keyPresent: false },
+    typesafeSettings: null,
   };
 
   test("findAdvisorModel matches the configured model", () => {

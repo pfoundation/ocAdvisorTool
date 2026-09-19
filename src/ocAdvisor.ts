@@ -2,6 +2,15 @@ import { Database } from "bun:sqlite";
 import { appendFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
+import {
+  TYPESAFE_DEFAULTS,
+  normalizeTypeSafeOptions,
+  resolveTypeSafeConfig,
+  type NormalizedTypeSafeOptions,
+  type TypeSafeConfig,
+  type TypeSafeOptions,
+  type TypeSafeSettings,
+} from "./typesafeState.js";
 
 const DB_PATH = join(homedir(), ".local/share/opencode/opencode.db");
 const METRICS_PATH = join(
@@ -37,6 +46,12 @@ interface AdvisorConfig {
   timeoutMs: number;
   maxTranscriptChars: number;
   agentEffort: string[] | null;
+  // Optional TypeSafe preflight. `typesafeSource` is the normalized plugin
+  // option; `typesafe`/`typesafeSettings` hold the resolved runtime view
+  // (enabled only when the SDK's own TYPESAFE_API_KEY is present).
+  typesafeSource: NormalizedTypeSafeOptions;
+  typesafe: TypeSafeConfig;
+  typesafeSettings: TypeSafeSettings | null;
 }
 
 const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = {
@@ -46,6 +61,9 @@ const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = {
   timeoutMs: ADVISOR_TIMEOUT_MS,
   maxTranscriptChars: 0,
   agentEffort: null,
+  typesafeSource: { disabled: false, overrides: {} },
+  typesafe: { enabled: false, settings: null, keyPresent: false },
+  typesafeSettings: null,
 };
 
 interface AdvisorConfigSource {
@@ -58,6 +76,7 @@ interface AdvisorConfigSource {
   max_transcript_chars?: unknown;
   agentEffort?: unknown;
   agent_effort?: unknown;
+  typesafe?: unknown;
 }
 
 function normalizeVariant(value: unknown): string | undefined {
@@ -143,6 +162,7 @@ function parseModelRef(ref: string): {
 function applyAdvisorConfigSource(
   base: AdvisorConfig,
   src: AdvisorConfigSource | null | undefined,
+  env: Record<string, string | undefined> = process.env,
 ): AdvisorConfig {
   if (!src || typeof src !== "object") return base;
   const next: AdvisorConfig = { ...base };
@@ -173,6 +193,15 @@ function applyAdvisorConfigSource(
     0,
   );
   if (cap !== undefined) next.maxTranscriptChars = cap;
+  if (src.typesafe !== undefined) {
+    const normalized = normalizeTypeSafeOptions(src.typesafe);
+    if ("error" in normalized) {
+      throw new Error(normalized.error);
+    }
+    next.typesafeSource = normalized;
+  }
+  next.typesafe = resolveTypeSafeConfig(next.typesafeSource, env);
+  next.typesafeSettings = next.typesafe.settings;
   return next;
 }
 
@@ -198,8 +227,13 @@ function resolveAdvisorConfig(
   let config = applyAdvisorConfigSource(
     DEFAULT_ADVISOR_CONFIG,
     envAdvisorConfigSource(env),
+    env,
   );
-  config = applyAdvisorConfigSource(config, options as AdvisorConfigSource);
+  config = applyAdvisorConfigSource(
+    config,
+    options as AdvisorConfigSource,
+    env,
+  );
   return config;
 }
 
@@ -1763,5 +1797,12 @@ export {
   resetAdvisorSessionCache,
   unwrapData,
   withTimeout,
+  formatV2Message,
 };
-export type { AdvisorConfig, AdvisorOutcome, AdvisorTrigger, V2PluginContext };
+export type {
+  AdvisorConfig,
+  AdvisorOutcome,
+  AdvisorTrigger,
+  V2PluginContext,
+  TypeSafeOptions,
+};
