@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  EFFORT_INSTRUCTIONS,
   GATE_EFFORT_QUESTION,
   GATE_NEEDED_QUESTION,
-  NEEDED_INSTRUCTIONS,
   classifyFailure,
   createSdkClient,
   runTypeSafeGate,
@@ -607,14 +605,30 @@ describe("gate benchmark wire payload", () => {
     expect(sent.coverage.benchmarks_omitted).toBe(false);
   });
 
-  test("instructions reference benchmark evidence rules", () => {
-    expect(NEEDED_INSTRUCTIONS).toContain("Artificial Analysis");
-    expect(NEEDED_INSTRUCTIONS).toContain(
-      "stronger requester can still benefit from independent review",
-    );
-    expect(NEEDED_INSTRUCTIONS).toContain(
-      "never evidence against consultation",
-    );
-    expect(EFFORT_INSTRUCTIONS).toContain("benchmark coverage");
+  test("serializes structured need instructions and both criteria through the SDK", async () => {
+    let sent: Record<string, any> | undefined;
+    const client = createSdkClient({
+      apiKey: "ts_test_key",
+      baseURL: "https://api.typesafe.test",
+      fetch: (async (_url, init) => {
+        sent = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify(response(0.34, { choice: "high", confidence: 0.9 })),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as typeof fetch,
+    });
+    const decision = await runGate({ client });
+    expect(decision.status).toBe("proceed");
+    expect(Object.keys(sent!.questions).sort()).toEqual(["effort", "needed"]);
+    expect(sent!.questions.needed).toMatchObject({
+      type: "noul",
+      instructions: {
+        question: expect.any(String),
+        judge: expect.any(Array),
+      },
+      criteria: { true: expect.any(String), false: expect.any(String) },
+    });
+    expect(sent!.questions.effort.type).toBe("choice");
   });
 });

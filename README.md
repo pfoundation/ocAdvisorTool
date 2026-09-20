@@ -58,6 +58,7 @@ one is available.
 | `typesafe` | enabled with a key | `false` disables screening; `true` or an object enables it (see below) |
 | `benchmarks.path` | data-directory snapshot | Absolute path to the local Artificial Analysis snapshot file |
 | `benchmarks.mappingsPath` | beside the snapshot | Absolute path to the local model-mapping overrides file |
+| `benchmarks.matchAnyProvider` | `false` | Resolve a model on another provider route when no exact provider binding exists (see below) |
 
 Set them as plugin options in `opencode.json`. Because a plugin loaded from
 the auto-discovered `plugin/` directory cannot receive options, list it
@@ -136,7 +137,8 @@ lower precedence than plugin options: `OCADVISOR_MODEL` (accepts
 `OCADVISOR_TIMEOUT_MS`, `OCADVISOR_MAX_TRANSCRIPT_CHARS`,
 `OCADVISOR_AGENT_EFFORT` (`true`, `false`, or a comma-separated allow-list),
 `OCADVISOR_DISABLED_FOR_MODELS` (comma-separated exact `provider/model` IDs),
-`OCADVISOR_BENCHMARKS_PATH`, and `OCADVISOR_BENCHMARK_MAPPINGS_PATH`.
+`OCADVISOR_BENCHMARKS_PATH`, `OCADVISOR_BENCHMARK_MAPPINGS_PATH`, and
+`OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER` (`true`/`false`).
 
 The "already the advisor model" skip is still keyed to Fable
 (`anthropic/claude-fable-*`); if you point the advisor at a different model,
@@ -194,6 +196,14 @@ did not pin an effort — which allowed effort fits. Only a clearly low need
 probability skips generation; uncertain judgments preserve the consultation,
 and any gate failure (timeout, transport, malformed answer) falls back to the
 ordinary advisor call.
+
+The need question asks what material value advice would add beyond the agent's
+next direct action. Its explicit yes/no criteria distinguish unresolved design,
+diagnosis, and correctness concerns from direct lookups, deterministic operations,
+mechanical edits, and unchanged already-answered questions. Independent review
+does not require the agent to be stuck. The criteria favor proceeding when the
+user explicitly asks for the advisor or task context is missing; model identities
+and benchmark advantages alone do not make a routine task worth consulting on.
 
 Screening is enabled automatically when the key is present. Configure it with
 the `typesafe` plugin option:
@@ -373,6 +383,41 @@ their deltas are withheld from strict comparison. Use `benchmarks status
 Unknown or unmapped models are not an error: consultations proceed with no
 benchmark evidence for them, and the gate treats the gap as uncertainty.
 
+### Matching across provider routes
+
+Bindings are provider-exact by default, which is the safest behavior: the
+same model can differ by serving route. When the same model is served
+through several routes (an aggregator, a gateway, or the host's own
+provider namespace), enable the cross-provider fallback instead of
+maintaining a binding per route:
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "@pfoundation/ocadvisor",
+      "options": {
+        "benchmarks": { "matchAnyProvider": true }
+      }
+    }
+  ]
+}
+```
+
+With it on, a request for `opencode/deepseek-v4.1-flash#max` resolves through
+the official `deepseek/deepseek-v4.1-flash#max` binding: exact provider
+bindings still win first, variants stay independent (`high` never borrows
+`max`), and the stable AA ID plus its published evaluated effort are
+preserved. If several providers define the same model and variant, local
+bindings win over bundled ones. Check the outcome before relying on it:
+
+```sh
+ocadvisor benchmarks status --match-any-provider true --model opencode/deepseek-v4.1-flash#max
+```
+
+The equivalent environment variable is
+`OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER=true`.
+
 ## How it works
 
 - `src/index.ts` → `dist/index.js` is the published entrypoint (default
@@ -533,6 +578,17 @@ unnecessary proceeds on routine questions landed at need 0.23–0.33, above the
 conservative default `skipBelow` (0.20): uncertainty preserves consultation
 by design. No fallbacks; latency p50/p95 280/607 ms. Adjust the threshold
 only from observed cases and re-run the evaluation after changing it.
+
+The [2026-09-20 gate-policy report](docs/reports/2026-09-20-gate-policy.md)
+compares threshold changes, identity-neutral wording, explicit material-value
+criteria, task-only screening, and a separate routine classifier over 24 synthetic
+scenarios. The selected material-value question keeps `skipBelow: 0.20` and model
+evidence. In 72 final confirmation calls it skipped all 30 routine consultations
+and preserved all 42 useful ones. The report records the held-out check, full
+criteria, tradeoffs, and limitations; these are scenario results, not a measured
+production error rate. The opt-in evaluation now includes mechanical edits,
+unchanged repeat questions, explicit advisor requests, and consequential small
+changes. Recalibrate after changing either question wording or threshold.
 
 ### End-to-end benchmark data flow
 

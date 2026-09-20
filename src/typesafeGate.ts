@@ -36,12 +36,27 @@ const EFFORT_CRITERIA: Record<string, string> = {
 const DEFAULT_EFFORT_CRITERION =
   "This level fits a consultation more demanding than the lower levels and less demanding than the higher ones";
 
-export const NEEDED_INSTRUCTIONS = `Given the request below, would an independent senior advisor materially improve the approach, help resolve a problem, or strengthen review at this point?
-A consultation can help at several different checkpoints; prior consultations are context, not a quota.
-Repeat consultations are useful when evidence, the approach, or the concern under review has changed.
-Judge the evidence actually present. Missing or truncated context is uncertainty, not evidence that consultation is unnecessary.
-A concrete question awaiting an independent second opinion usually qualifies, even when the agent is not stuck.
-Model capability evidence: \`models\` identifies the requesting and advisor models; \`benchmarks.comparisons\` shows Artificial Analysis scores on the same metrics with oriented differences (positive favors the advisor) at the advisor's default effort. Treat scores as rough capability evidence, not certainty about this task: a stronger requester can still benefit from independent review, and a weaker requester still needs no advice for trivial work. Unknown, mismatched, or stale scores are uncertainty, never evidence against consultation.`;
+// Calibrated with these exact instructions and criteria at skipBelow=0.20.
+// See docs/reports/2026-09-20-gate-policy.md before changing the threshold:
+// the same numeric cutoff is not interchangeable across question wordings.
+export const NEEDED_INSTRUCTIONS = {
+  question:
+    "Would this specific advisor consultation add material value beyond the requesting agent's next direct action with the evidence and tools already available?",
+  judge: [
+    "Assess the actual unresolved question, not just whether it is phrased as a request for an opinion.",
+    "Material value includes resolving substantive uncertainty, comparing meaningful approaches, finding a plausible correctness issue, or independent review of consequential work. Being stuck is not required.",
+    "A useful action that is already determined by direct reading, a deterministic tool, or an explicit mechanical instruction usually needs no consultation.",
+    "Explicit user requests for the advisor should proceed. Missing or truncated task context is uncertainty, not proof that consultation is unnecessary.",
+    "Prior consultations are not a quota. Revisit changed evidence or concerns; an identical settled question without new evidence adds little.",
+    "Model identities alone do not establish value. Relevant comparable benchmarks may inform substantive cases; an advisor advantage cannot turn a direct lookup into a substantive case. A strong requester still benefits from independent review. Missing, stale, or incomparable benchmarks neither prove nor disprove value.",
+  ],
+};
+
+export const NEEDED_CRITERIA = {
+  true: "A substantive unresolved decision, diagnosis, or correctness concern could benefit from independent reasoning; or the user explicitly requests the advisor. Uncertain task evidence does not justify suppressing consultation.",
+  false:
+    "Visible evidence establishes that a direct lookup, deterministic operation, mechanical edit, or unchanged previously answered question resolves this request without meaningful independent reasoning.",
+};
 
 export const EFFORT_INSTRUCTIONS = `Assuming this consultation proceeds, which effort level is appropriate for this specific decision or review?
 Choose from the supplied levels based on reasoning difficulty, uncertainty, interacting components, and consequences, not transcript length.
@@ -511,7 +526,7 @@ export async function runTypeSafeGate(
   }
 
   const questions: Record<string, unknown> = {
-    [GATE_NEEDED_QUESTION]: noul(NEEDED_INSTRUCTIONS),
+    [GATE_NEEDED_QUESTION]: noul(NEEDED_INSTRUCTIONS, NEEDED_CRITERIA),
   };
   if (availableEffortLevels.length > 0) {
     questions[GATE_EFFORT_QUESTION] = choice(

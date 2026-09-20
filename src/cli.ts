@@ -85,13 +85,17 @@ Exit codes: 0 published; 1 fetch, validation, or write failure;
 const STATUS_HELP = `ocadvisor benchmarks status — inspect on-disk benchmark data
 
 Usage:
-  ocadvisor benchmarks status [--path <file>] [--mappings-path <file>] [--model <provider/model#variant>]
+  ocadvisor benchmarks status [--path <file>] [--mappings-path <file>] [--model <provider/model#variant>] [--match-any-provider <true|false>]
 
 Reports the active snapshot and mappings files without network access.
 With --model, resolves one exact provider/model/variant tuple against
 the active data and prints its match or why it is unmatched. Status
 describes on-disk candidates; a running plugin may still hold an older
 in-memory copy until its next consultation.
+
+--match-any-provider mirrors the plugin's benchmarks.matchAnyProvider
+option so status reflects the same resolution the gate uses; it is off
+by default.
 
 Testing-only flags (not part of the documented surface):
 --seed-snapshot <file> and --seed-mappings <file> point the fallback
@@ -306,6 +310,8 @@ async function benchmarksStatus(
     "--path",
     "--mappings-path",
     "--model",
+    "--match-any-provider",
+    // Seed overrides are testing seams; see the help text.
     "--seed-snapshot",
     "--seed-mappings",
   ]);
@@ -317,6 +323,19 @@ async function benchmarksStatus(
   if (parsed.values.path !== undefined) explicit.path = parsed.values.path;
   if (parsed.values["mappings-path"] !== undefined) {
     explicit.mappingsPath = parsed.values["mappings-path"];
+  }
+  if (parsed.values["match-any-provider"] !== undefined) {
+    const lowered = parsed.values["match-any-provider"].trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(lowered)) {
+      explicit.matchAnyProvider = true;
+    } else if (["false", "0", "no", "off", ""].includes(lowered)) {
+      explicit.matchAnyProvider = false;
+    } else {
+      deps.err(
+        "ocadvisor: --match-any-provider must be true or false\n" + STATUS_HELP,
+      );
+      return 2;
+    }
   }
   const resolved = resolveBenchmarkPaths(explicit, env);
   if ("error" in resolved) {
@@ -337,6 +356,7 @@ async function benchmarksStatus(
   const store = await createBenchmarkStore({
     snapshotPath: resolved.snapshotPath,
     mappingsPath: resolved.mappingsPath,
+    matchAnyProvider: explicit.matchAnyProvider ?? false,
     // Seed overrides exist for testing the fallback path; ordinary use
     // reads the bundled data relative to this module.
     seedSnapshotPath: parsed.values["seed-snapshot"],

@@ -901,10 +901,12 @@ describe("resolveAdvisorConfig", () => {
   const noEnv: Record<string, string | undefined> = {};
 
   test("defaults to anthropic/claude-fable-5-1#xhigh", () => {
-    expect(resolveAdvisorConfig(undefined, noEnv)).toEqual(
-      DEFAULT_ADVISOR_CONFIG,
-    );
-    expect(resolveAdvisorConfig({}, noEnv)).toEqual(DEFAULT_ADVISOR_CONFIG);
+    const resolved = {
+      ...DEFAULT_ADVISOR_CONFIG,
+      benchmarks: { ...DEFAULT_ADVISOR_CONFIG.benchmarks, matchAnyProvider: false },
+    };
+    expect(resolveAdvisorConfig(undefined, noEnv)).toEqual(resolved);
+    expect(resolveAdvisorConfig({}, noEnv)).toEqual(resolved);
   });
 
   test("options override provider, model, and variant", () => {
@@ -1156,11 +1158,12 @@ describe("resolveAdvisorConfig", () => {
   });
 
   test("benchmarks defaults to fully default paths", () => {
-    expect(resolveAdvisorConfig(undefined, noEnv).benchmarks).toEqual({});
-    expect(resolveAdvisorConfig({}, noEnv).benchmarks).toEqual({});
+    const defaults = { matchAnyProvider: false };
+    expect(resolveAdvisorConfig(undefined, noEnv).benchmarks).toEqual(defaults);
+    expect(resolveAdvisorConfig({}, noEnv).benchmarks).toEqual(defaults);
     expect(
       resolveAdvisorConfig({ benchmarks: null }, noEnv).benchmarks,
-    ).toEqual({});
+    ).toEqual(defaults);
   });
 
   test("benchmarks accepts explicit snapshot and mapping paths", () => {
@@ -1176,6 +1179,7 @@ describe("resolveAdvisorConfig", () => {
     expect(config.benchmarks).toEqual({
       path: "/tmp/snap.json",
       mappingsPath: "/tmp/maps.json",
+      matchAnyProvider: false,
     });
   });
 
@@ -1187,6 +1191,7 @@ describe("resolveAdvisorConfig", () => {
     expect(resolveAdvisorConfig(undefined, env).benchmarks).toEqual({
       path: "/tmp/env/snap.json",
       mappingsPath: "/tmp/env/maps.json",
+      matchAnyProvider: false,
     });
     // A plugin option overrides one field while the other stays on env.
     expect(
@@ -1195,6 +1200,7 @@ describe("resolveAdvisorConfig", () => {
     ).toEqual({
       path: "/tmp/opt/snap.json",
       mappingsPath: "/tmp/env/maps.json",
+      matchAnyProvider: false,
     });
   });
 
@@ -1204,7 +1210,7 @@ describe("resolveAdvisorConfig", () => {
         { benchmarks: { path: "  ", mappingsPath: null, extra: true } },
         noEnv,
       ).benchmarks,
-    ).toEqual({});
+    ).toEqual({ matchAnyProvider: false });
   });
 
   test("benchmarks rejects non-object and non-absolute values", () => {
@@ -1225,6 +1231,54 @@ describe("resolveAdvisorConfig", () => {
         OCADVISOR_BENCHMARKS_PATH: "relative/snap.json",
       }),
     ).toThrow(/benchmarks\.path must be an absolute path/);
+  });
+
+  test("benchmarks.matchAnyProvider defaults to strict providers", () => {
+    expect(resolveAdvisorConfig(undefined, noEnv).benchmarks.matchAnyProvider).toBe(
+      false,
+    );
+    expect(
+      resolveAdvisorConfig({ benchmarks: { matchAnyProvider: false } }, noEnv)
+        .benchmarks.matchAnyProvider,
+    ).toBe(false);
+  });
+
+  test("benchmarks.matchAnyProvider accepts booleans and boolean-ish strings", () => {
+    expect(
+      resolveAdvisorConfig({ benchmarks: { matchAnyProvider: true } }, noEnv)
+        .benchmarks.matchAnyProvider,
+    ).toBe(true);
+    for (const value of ["true", "1", "yes", "on"]) {
+      expect(
+        resolveAdvisorConfig(
+          undefined,
+          { OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER: value },
+        ).benchmarks.matchAnyProvider,
+      ).toBe(true);
+    }
+    for (const value of ["false", "0", "no", "off", ""]) {
+      expect(
+        resolveAdvisorConfig(
+          undefined,
+          { OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER: value },
+        ).benchmarks.matchAnyProvider,
+      ).toBe(false);
+    }
+  });
+
+  test("benchmarks.matchAnyProvider rejects unusable values", () => {
+    expect(() =>
+      resolveAdvisorConfig(
+        { benchmarks: { matchAnyProvider: "sometimes" } },
+        noEnv,
+      ),
+    ).toThrow(/matchAnyProvider/);
+    expect(() =>
+      resolveAdvisorConfig(
+        undefined,
+        { OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER: "sometimes" },
+      ),
+    ).toThrow(/matchAnyProvider/);
   });
 });
 

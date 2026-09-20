@@ -155,6 +155,22 @@
     },
     {
       "providerID": "deepseek",
+      "modelID": "deepseek-v4.1-flash",
+      "variant": "max",
+      "aaModelID": "dbe7c625-3100-4463-b479-a228c41f75dd",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-1-flash"
+    },
+    {
+      "providerID": "deepseek",
+      "modelID": "deepseek-v4.1-flash",
+      "variant": null,
+      "aaModelID": "dbe7c625-3100-4463-b479-a228c41f75dd",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-1-flash"
+    },
+    {
+      "providerID": "deepseek",
       "modelID": "deepseek-v4-pro",
       "variant": null,
       "aaModelID": "83173329-c09a-41f1-a028-a282a5f908d7",
@@ -171,11 +187,27 @@
     },
     {
       "providerID": "deepseek",
-      "modelID": "deepseek-v4-1-flash",
+      "modelID": "deepseek-v4-pro",
+      "variant": "high",
+      "aaModelID": "5da3c0e2-65d2-4bff-a410-cb2132ddafb6",
+      "evaluatedEffort": "high",
+      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-pro-0424-high"
+    },
+    {
+      "providerID": "deepseek",
+      "modelID": "deepseek-v4-flash",
       "variant": null,
-      "aaModelID": "dbe7c625-3100-4463-b479-a228c41f75dd",
+      "aaModelID": "fe4c0848-e284-4e52-a79d-cdc28392f1a9",
       "evaluatedEffort": "max",
-      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-1-flash"
+      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-flash"
+    },
+    {
+      "providerID": "deepseek",
+      "modelID": "deepseek-v4-flash",
+      "variant": "max",
+      "aaModelID": "fe4c0848-e284-4e52-a79d-cdc28392f1a9",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-flash"
     },
     {
       "providerID": "moonshot",

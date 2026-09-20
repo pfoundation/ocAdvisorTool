@@ -137,7 +137,21 @@ const BINDINGS: BindingSpec[] = [
     variant: "xhigh",
     slug: "grok-4-6-xhigh",
   },
-  // DeepSeek.
+  // DeepSeek. OpenCode serves the dotted model ID; the official route uses
+  // the same model behind the `deepseek` provider, so the cross-provider
+  // option covers routed sessions without duplicating every provider.
+  {
+    providerID: "deepseek",
+    modelID: "deepseek-v4.1-flash",
+    variant: "max",
+    slug: "deepseek-v4-1-flash",
+  },
+  {
+    providerID: "deepseek",
+    modelID: "deepseek-v4.1-flash",
+    variant: null,
+    slug: "deepseek-v4-1-flash",
+  },
   {
     providerID: "deepseek",
     modelID: "deepseek-v4-pro",
@@ -152,9 +166,21 @@ const BINDINGS: BindingSpec[] = [
   },
   {
     providerID: "deepseek",
-    modelID: "deepseek-v4-1-flash",
+    modelID: "deepseek-v4-pro",
+    variant: "high",
+    slug: "deepseek-v4-pro-0424-high",
+  },
+  {
+    providerID: "deepseek",
+    modelID: "deepseek-v4-flash",
     variant: null,
-    slug: "deepseek-v4-1-flash",
+    slug: "deepseek-v4-flash",
+  },
+  {
+    providerID: "deepseek",
+    modelID: "deepseek-v4-flash",
+    variant: "max",
+    slug: "deepseek-v4-flash",
   },
   // Moonshot.
   {
@@ -217,7 +243,10 @@ async function refreshSnapshot(): Promise<void> {
     log(`Artificial Analysis response rejected: ${snapshot.error}`);
     process.exit(1);
   }
-  writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2) + "\n");
+  writeFileSync(
+    join(dataDir, "artificialAnalysis.snapshot.json"),
+    JSON.stringify(snapshot, null, 2) + "\n",
+  );
   log(
     `seed snapshot refreshed: ${snapshot.models.length} models, hash ${snapshot.contentHash}`,
   );

@@ -325,7 +325,7 @@ describe("runCli benchmarks status", () => {
     );
     expect(code).toBe(0);
     expect(captured.text()).toContain("snapshot: bundled seed");
-    expect(captured.text()).toContain("mappings: 0 local, 24 bundled");
+    expect(captured.text()).toMatch(/mappings: 0 local, \d+ bundled/);
   });
 
   test("returns nonzero when neither user nor seed data is usable", async () => {
@@ -417,5 +417,38 @@ describe("runCli benchmarks status", () => {
     );
     expect(code).toBe(0);
     expect(captured.text()).toContain("mappings: 0 local, 0 bundled");
+  });
+
+  test("mirrors the cross-provider matching option", async () => {
+    const dir = tempDir();
+    const { path } = writeSnapshot(dir);
+    writeMappings(dir);
+    const argv = (flag: string[]) =>
+      seedlessArgs(
+        "benchmarks",
+        "status",
+        "--path",
+        path,
+        "--model",
+        "opencode/requester-model#high",
+        ...flag,
+      );
+
+    const strict = capture();
+    expect(await runCli(argv([]), strict.deps)).toBe(1);
+    expect(strict.text()).toContain("match: unmapped");
+
+    const relaxed = capture();
+    expect(await runCli(argv(["--match-any-provider", "true"]), relaxed.deps)).toBe(
+      0,
+    );
+    expect(relaxed.text()).toContain("match: matched (local)");
+    expect(relaxed.text()).toContain("aa_model: synthetic-aa-1");
+
+    const bad = capture();
+    expect(
+      await runCli(argv(["--match-any-provider", "sometimes"]), bad.deps),
+    ).toBe(2);
+    expect(bad.text()).toContain("--match-any-provider");
   });
 });
