@@ -217,7 +217,10 @@ async function refreshSnapshot(): Promise<void> {
     log(`Artificial Analysis response rejected: ${snapshot.error}`);
     process.exit(1);
   }
-  writeFileSync(snapshotPath, JSON.stringify(snapshot, null, 2) + "\n");
+  writeFileSync(
+    join(dataDir, "artificialAnalysis.snapshot.json"),
+    JSON.stringify(snapshot, null, 2) + "\n",
+  );
   log(
     `seed snapshot refreshed: ${snapshot.models.length} models, hash ${snapshot.contentHash}`,
   );
