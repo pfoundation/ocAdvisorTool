@@ -3,6 +3,132 @@
   "note": "Benchmark profiles in these cases are synthetic fixtures for evaluation only (fake model IDs and scores). They are never shipped data and never reach the plugin's real snapshot files.",
   "cases": [
     {
+      "id": "script-lookup",
+      "expectation": "skip",
+      "why": "A direct local lookup resolves the question.",
+      "input": {
+        "mode": "general",
+        "trigger": "other",
+        "question": "Which npm script runs the typecheck?"
+      },
+      "state": {
+        "user": { "latestRequest": "Tell me the typecheck command." },
+        "context": {
+          "messages": [
+            "## User\nTell me the typecheck command.",
+            "## Assistant\nThe scripts object in package.json is available locally and defines typecheck. No error or conflicting instructions."
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] }
+      }
+    },
+    {
+      "id": "mechanical-rename",
+      "expectation": "skip",
+      "why": "Explicit mechanical local rename.",
+      "input": {
+        "mode": "general",
+        "trigger": "other",
+        "question": "Should count be renamed to retryCount here?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "Rename this local count variable to retryCount."
+        },
+        "context": {
+          "messages": [
+            "## User\nRename this local count variable to retryCount.",
+            "## Assistant\nIt is a function-local variable with no external references or name-based reflection; editor rename resolves all references."
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] }
+      }
+    },
+    {
+      "id": "spelling-review",
+      "expectation": "skip",
+      "why": "Review framing does not create a substantive issue.",
+      "input": {
+        "mode": "review",
+        "trigger": "pre_complete",
+        "question": "Is changing 'recieve' to 'receive' in the README appropriate?"
+      },
+      "state": {
+        "user": { "latestRequest": "Fix this spelling error." },
+        "context": {
+          "messages": [
+            "## User\nFix this spelling error.",
+            "## Assistant\nSingle prose spelling correction; no code, command, identifier, or quoted external text changes."
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] }
+      }
+    },
+    {
+      "id": "duplicate-no-change",
+      "expectation": "skip",
+      "why": "The same settled question with no new evidence adds no value.",
+      "input": {
+        "mode": "plan",
+        "trigger": "followup",
+        "question": "Should the migration runner use an advisory lock?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "Implement the previously agreed advisory-lock approach."
+        },
+        "context": {
+          "messages": [
+            "## User\nImplement the previously agreed advisory-lock approach.",
+            "## Assistant\nAdvisor already reviewed this exact choice; the answer is recorded, and there have been no changed requirements, evidence, tests, or implementation decisions since then. The agent is asking the same question again."
+          ]
+        },
+        "history": { "priorConsultations": 1, "priorModes": ["plan"] }
+      }
+    },
+    {
+      "id": "explicit-advisor",
+      "expectation": "proceed",
+      "why": "Honor an explicit user request for the advisor even for an easy question.",
+      "input": {
+        "mode": "review",
+        "trigger": "other",
+        "question": "Please give a second opinion on the public name of this helper."
+      },
+      "state": {
+        "user": {
+          "latestRequest": "Ask the advisor to independently review the name before we finalize it."
+        },
+        "context": {
+          "messages": [
+            "## User\nAsk the advisor to independently review the name before we finalize it.",
+            "## Assistant\nThe user explicitly requests an advisor opinion. The helper is small and both suggested names work."
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] }
+      }
+    },
+    {
+      "id": "one-line-auth",
+      "expectation": "proceed",
+      "why": "Small diff has substantive authorization consequences.",
+      "input": {
+        "mode": "review",
+        "trigger": "pre_complete",
+        "question": "Is removing this tenantId condition safe?"
+      },
+      "state": {
+        "user": { "latestRequest": "Simplify the authorization filter." },
+        "context": {
+          "messages": [
+            "## User\nSimplify the authorization filter.",
+            "## Assistant\nThe proposed one-line edit removes the only tenant boundary from the shared records query; behavior for cross-tenant records is unresolved."
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] }
+      }
+    },
+    {
       "id": "routine-factual",
       "expectation": "skip",
       "why": "Routine factual lookup with a clear file target; no second opinion changes it.",

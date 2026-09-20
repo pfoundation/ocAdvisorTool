@@ -197,6 +197,14 @@ probability skips generation; uncertain judgments preserve the consultation,
 and any gate failure (timeout, transport, malformed answer) falls back to the
 ordinary advisor call.
 
+The need question asks what material value advice would add beyond the agent's
+next direct action. Its explicit yes/no criteria distinguish unresolved design,
+diagnosis, and correctness concerns from direct lookups, deterministic operations,
+mechanical edits, and unchanged already-answered questions. Independent review
+does not require the agent to be stuck. The criteria favor proceeding when the
+user explicitly asks for the advisor or task context is missing; model identities
+and benchmark advantages alone do not make a routine task worth consulting on.
+
 Screening is enabled automatically when the key is present. Configure it with
 the `typesafe` plugin option:
 
@@ -570,6 +578,17 @@ unnecessary proceeds on routine questions landed at need 0.23–0.33, above the
 conservative default `skipBelow` (0.20): uncertainty preserves consultation
 by design. No fallbacks; latency p50/p95 280/607 ms. Adjust the threshold
 only from observed cases and re-run the evaluation after changing it.
+
+The [2026-09-20 gate-policy report](docs/reports/2026-09-20-gate-policy.md)
+compares threshold changes, identity-neutral wording, explicit material-value
+criteria, task-only screening, and a separate routine classifier over 24 synthetic
+scenarios. The selected material-value question keeps `skipBelow: 0.20` and model
+evidence. In 72 final confirmation calls it skipped all 30 routine consultations
+and preserved all 42 useful ones. The report records the held-out check, full
+criteria, tradeoffs, and limitations; these are scenario results, not a measured
+production error rate. The opt-in evaluation now includes mechanical edits,
+unchanged repeat questions, explicit advisor requests, and consequential small
+changes. Recalibrate after changing either question wording or threshold.
 
 ### End-to-end benchmark data flow
 
