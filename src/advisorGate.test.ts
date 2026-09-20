@@ -3,10 +3,12 @@
 // file, and a stub gate client, so no network or production state is touched.
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { computeSnapshotHash } from "./benchmarkTypes";
 import {
+  resetBenchmarkStores,
   runAdvisor,
   type AdvisorConfig,
   type V2PluginContext,
@@ -17,6 +19,7 @@ import {
   type GateClient,
   type SystemOneCall,
 } from "./typesafeGate";
+import type { AdvisorProfile, RequesterProfile } from "./modelProfiles";
 import { TYPESAFE_DEFAULTS } from "./typesafeState";
 
 let dir: string;
@@ -29,7 +32,7 @@ function writeFixtureDb(): void {
     "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, model TEXT, agent TEXT, directory TEXT)",
   );
   db.run(
-    "CREATE TABLE session_message (session_id TEXT, type TEXT, seq INTEGER, data TEXT)",
+    "CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, seq INTEGER, data TEXT)",
   );
   db.query(
     "INSERT INTO session_v2 (id, parent_id, title, model, agent, directory) VALUES (?,?,?,?,?,?)",
@@ -57,6 +60,7 @@ beforeEach(() => {
   dbPath = join(dir, "fixture.db");
   metricsPath = join(dir, "metrics.jsonl");
   writeFixtureDb();
+  resetBenchmarkStores();
 });
 
 afterEach(() => {
@@ -107,6 +111,8 @@ function runtimeWith(options: {
   generate?: (request: Record<string, unknown>) => Promise<unknown>;
   agentEffort?: string[] | null;
   variant?: string | undefined;
+  omitCatalog?: boolean;
+  v2ModelList?: Array<Record<string, unknown>>;
 }): {
   runtime: V2PluginContext;
   generated: Array<Record<string, unknown>>;
@@ -186,6 +192,16 @@ function runtimeWith(options: {
       },
     },
   } as unknown as V2PluginContext;
+  if (options.omitCatalog) delete runtime.catalog;
+  if (options.v2ModelList !== undefined) {
+    const models = options.v2ModelList;
+    runtime.model = {
+      list: async () => {
+        counts.modelList++;
+        return { data: models };
+      },
+    };
+  }
   return { runtime, generated, counts };
 }
 
@@ -225,6 +241,7 @@ function baseConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
     maxTranscriptChars: 0,
     agentEffort: ["high", "xhigh", "max"],
     disabledForModels: [],
+    benchmarks: {},
     typesafeSource: { disabled: false, overrides: {} },
     typesafe: {
       enabled: true,
@@ -674,5 +691,710 @@ describe("runAdvisor with the TypeSafe gate", () => {
       "skipped_model",
       "advisor_response",
     ]);
+  });
+});
+
+describe("runAdvisor resolves model profiles", () => {
+  function insertAssistantMessage(row: {
+    id: string;
+    sessionId: string;
+    seq: number;
+    model: Record<string, unknown>;
+    toolBlocks?: Array<{ id: string; name: string }>;
+  }): void {
+    const db = new Database(dbPath);
+    db.query(
+      "INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?,?,?,?,?)",
+    ).run(
+      row.id,
+      row.sessionId,
+      "assistant",
+      row.seq,
+      JSON.stringify({
+        agent: "build",
+        model: row.model,
+        content: (row.toolBlocks ?? []).map((block) => ({
+          type: "tool",
+          id: block.id,
+          name: block.name,
+          state: { status: "running", input: {} },
+        })),
+      }),
+    );
+    db.close();
+  }
+
+  function captureProfiles(runtime: V2PluginContext): Array<{
+    requester: RequesterProfile;
+    advisor: AdvisorProfile;
+  }> {
+    const seen: Array<{
+      requester: RequesterProfile;
+      advisor: AdvisorProfile;
+    }> = [];
+    runtime.__advisorTest!.profileSink = (profiles) => {
+      seen.push(profiles);
+    };
+    return seen;
+  }
+
+  test("correlates the requester to the originating message", async () => {
+    insertAssistantMessage({
+      id: "msg_req",
+      sessionId: "ses_fixture",
+      seq: 10,
+      model: { providerID: "openai", id: "gpt-6-astra", variant: "xhigh" },
+      toolBlocks: [{ id: "call_req", name: "advisor" }],
+    });
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      callerMessageID: "msg_req",
+      callerCallID: "call_req",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.requester).toEqual({
+      providerID: "openai",
+      modelID: "gpt-6-astra",
+      variant: "xhigh",
+      provenance: "invocation_message",
+    });
+  });
+
+  test("falls back to the latest message without identifiers", async () => {
+    insertAssistantMessage({
+      id: "msg_latest",
+      sessionId: "ses_fixture",
+      seq: 10,
+      model: { providerID: "test", id: "latest-model", variant: "high" },
+    });
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.requester).toEqual({
+      providerID: "test",
+      modelID: "latest-model",
+      variant: "high",
+      provenance: "latest_message",
+    });
+  });
+
+  test("isolates subagent requesters from parents", async () => {
+    insertChildSession("ses_child", "ses_fixture", {
+      providerID: "meta",
+      id: "muse-spark-1.3",
+    });
+    insertAssistantMessage({
+      id: "msg_child",
+      sessionId: "ses_child",
+      seq: 2,
+      model: { providerID: "test", id: "child-model", variant: "max" },
+    });
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_child",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.requester.modelID).toBe("child-model");
+    expect(seen[0]?.requester.provenance).toBe("latest_message");
+  });
+
+  test("pins an explicit caller effort over candidates", async () => {
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      effort: "max",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.advisor).toEqual({
+      providerID: "anthropic",
+      modelID: "claude-fable-5-1",
+      policy: { kind: "pinned", effort: "max" },
+    });
+  });
+
+  test("exposes gate candidates with a validated fallback", async () => {
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.advisor.policy).toEqual({
+      kind: "candidates",
+      candidates: ["high", "xhigh", "max"],
+      fallback: "xhigh",
+    });
+  });
+
+  test("fixes the effort when selection is unavailable", async () => {
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig({ agentEffort: null }),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.advisor.policy).toEqual({
+      kind: "fixed",
+      effort: "xhigh",
+    });
+  });
+
+  test("keeps guards on the session model ahead of profiles", async () => {
+    setSessionModel("ses_fixture", {
+      providerID: "anthropic",
+      id: "claude-fable-9",
+    });
+    insertAssistantMessage({
+      id: "msg_other",
+      sessionId: "ses_fixture",
+      seq: 10,
+      model: { providerID: "openai", id: "gpt-6-astra" },
+    });
+    const { client, calls } = stubGate(gateResponse(0.9));
+    const { runtime } = runtimeWith({ gateClient: client });
+    const seen = captureProfiles(runtime);
+
+    const result = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      callerMessageID: "msg_other",
+      config: baseConfig(),
+    });
+
+    expect(result).toContain("already Fable");
+    expect(calls).toHaveLength(0);
+    expect(seen).toHaveLength(0);
+  });
+
+  test("prefers V2 model discovery with validated defaults", async () => {
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime, counts } = runtimeWith({
+      gateClient: client,
+      omitCatalog: true,
+      v2ModelList: [
+        {
+          providerID: "anthropic",
+          id: "claude-fable-5-1",
+          enabled: true,
+          variants: [{ id: "high" }, { id: "max" }],
+        },
+      ],
+    });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig(),
+    });
+
+    expect(counts.modelList).toBe(1);
+    expect(seen).toHaveLength(1);
+    // xhigh is neither a candidate nor the fallback: discovery says the
+    // configured default is unsupported.
+    expect(seen[0]?.advisor.policy).toEqual({
+      kind: "candidates",
+      candidates: ["high", "max"],
+      fallback: null,
+    });
+  });
+
+  test("prefers V2 discovery over catalog when both exist", async () => {
+    const { client } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({
+      gateClient: client,
+      v2ModelList: [
+        {
+          providerID: "anthropic",
+          id: "claude-fable-5-1",
+          enabled: true,
+          variants: [{ id: "max" }],
+        },
+      ],
+    });
+    const seen = captureProfiles(runtime);
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Profile check",
+      config: baseConfig(),
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.advisor.policy).toEqual({
+      kind: "candidates",
+      candidates: ["max"],
+      fallback: null,
+    });
+  });
+});
+
+describe("runAdvisor benchmark evidence", () => {
+  // Synthetic snapshot and mappings with fake IDs and scores.
+  function writeBenchmarkFiles(scores: {
+    requesterCoding: number;
+    advisorCoding: number;
+  }): { snapshotPath: string; mappingsPath: string; contentHash: string } {
+    const endpoint = "https://artificialanalysis.ai/api/v2/data/llms/models";
+    const models = [
+      {
+        id: "synthetic-aa-r",
+        creatorID: "synthetic-creator",
+        name: "Synthetic Requester",
+        slug: "synthetic-requester",
+        evaluatedEffort: null,
+        evaluatedAt: null,
+        evaluations: {
+          artificial_analysis_coding_index: scores.requesterCoding,
+          artificial_analysis_intelligence_index: 62,
+          hle: 0.3,
+          gpqa: 0.7,
+        },
+      },
+      {
+        id: "synthetic-aa-a",
+        creatorID: "synthetic-creator",
+        name: "Synthetic Advisor",
+        slug: "synthetic-advisor",
+        evaluatedEffort: null,
+        evaluatedAt: null,
+        evaluations: {
+          artificial_analysis_coding_index: scores.advisorCoding,
+          artificial_analysis_intelligence_index: 82,
+          hle: 0.6,
+          gpqa: null,
+        },
+      },
+    ];
+    const contentHash = computeSnapshotHash({
+      source: "artificial-analysis",
+      endpoint,
+      methodologyVersion: null,
+      models,
+    });
+    const snapshotPath = join(dir, "artificial-analysis.json");
+    writeFileSync(
+      snapshotPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        source: "artificial-analysis",
+        sourceURL: "https://artificialanalysis.ai/",
+        endpoint,
+        fetchedAt: "2026-09-10T00:00:00.000Z",
+        contentHash,
+        methodologyVersion: null,
+        metricDefinitions: [],
+        models,
+      }),
+    );
+    const mappingsPath = join(dir, "model-mappings.json");
+    writeFileSync(
+      mappingsPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        bindings: [
+          {
+            providerID: "meta",
+            modelID: "muse-spark-1.3",
+            variant: null,
+            aaModelID: "synthetic-aa-r",
+            evaluatedEffort: "max",
+            evidenceURL: "https://artificialanalysis.ai/synthetic",
+          },
+          ...["high", "xhigh", "max"].map((variant) => ({
+            providerID: "anthropic",
+            modelID: "claude-fable-5-1",
+            variant,
+            aaModelID: "synthetic-aa-a",
+            evaluatedEffort: "max",
+            evidenceURL: "https://artificialanalysis.ai/synthetic",
+          })),
+        ],
+      }),
+    );
+    return { snapshotPath, mappingsPath, contentHash };
+  }
+
+  function benchmarkSeams(paths: {
+    snapshotPath: string;
+    mappingsPath: string;
+  }): {
+    config: { path: string; mappingsPath: string };
+    storeOptions: {
+      env: Record<string, string | undefined>;
+      seedSnapshotPath: string;
+      seedMappingsPath: string;
+    };
+  } {
+    const seedMappingsPath = join(dir, "seed-mappings.json");
+    writeFileSync(
+      seedMappingsPath,
+      JSON.stringify({ schemaVersion: 1, bindings: [] }),
+    );
+    return {
+      config: { path: paths.snapshotPath, mappingsPath: paths.mappingsPath },
+      storeOptions: {
+        env: {},
+        seedSnapshotPath: join(dir, "seed-missing.json"),
+        seedMappingsPath,
+      },
+    };
+  }
+
+  test("sends profiles, scores, and deltas to the gate", async () => {
+    const written = writeBenchmarkFiles({
+      requesterCoding: 60,
+      advisorCoding: 80,
+    });
+    const seams = benchmarkSeams(written);
+    const { client, calls } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    runtime.__advisorTest!.benchmarkStoreOptions = seams.storeOptions;
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Evidence check",
+      config: baseConfig({ benchmarks: seams.config }),
+    });
+
+    expect(calls).toHaveLength(1);
+    const sent = calls[0]?.state as Record<string, any>;
+    expect(sent.models.requester).toEqual({
+      provider: "meta",
+      model: "muse-spark-1.3",
+      effort: null,
+      provenance: "session_fallback",
+    });
+    expect(sent.models.advisor.effort_policy).toEqual({
+      kind: "candidates",
+      candidates: ["high", "xhigh", "max"],
+      fallback: "xhigh",
+    });
+    expect(sent.benchmarks.source).toBe("user");
+    expect(sent.benchmarks.content_hash).toBe(written.contentHash);
+    expect(sent.benchmarks.comparisons[0]).toMatchObject({
+      metric: "artificial_analysis_coding_index",
+      requester: 60,
+      advisor: 80,
+      advisor_minus_requester: 20,
+      comparable: true,
+    });
+    expect(
+      sent.benchmarks.advisor_candidates.map(
+        (entry: { effort: string }) => entry.effort,
+      ),
+    ).toEqual(["high", "xhigh", "max"]);
+    expect(
+      sent.benchmarks.advisor_candidates.every(
+        (entry: { status: string }) => entry.status === "matched",
+      ),
+    ).toBe(true);
+
+    const row = metricRecords()[0]!;
+    expect(row.outcome).toBe("skipped_typesafe");
+    expect(row.benchmarks).toMatchObject({
+      source: "user",
+      requesterMatch: "matched",
+      advisorMatch: "matched",
+      advisorPolicy: "candidates:high,xhigh,max>xhigh",
+      finalEffort: null,
+      finalMatch: null,
+      hashVerified: true,
+    });
+    expect(row.benchmarks.requester).toBe(
+      "meta/muse-spark-1.3 (session_fallback)",
+    );
+    expect(row.benchmarks.contentHash).toBe(written.contentHash);
+  });
+
+  test("resolves the final advisor match after selection", async () => {
+    const written = writeBenchmarkFiles({
+      requesterCoding: 60,
+      advisorCoding: 80,
+    });
+    const seams = benchmarkSeams(written);
+    const { client } = stubGate(gateResponse(0.9));
+    const { runtime, generated } = runtimeWith({ gateClient: client });
+    runtime.__advisorTest!.benchmarkStoreOptions = seams.storeOptions;
+
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Evidence check",
+      config: baseConfig({ benchmarks: seams.config }),
+    });
+
+    expect(text).toContain("advisor answer");
+    expect(generated).toHaveLength(1);
+    const row = metricRecords()[0]!;
+    expect(row.outcome).toBe("advisor_response");
+    expect(row.benchmarks).toMatchObject({
+      source: "user",
+      finalEffort: "xhigh",
+      finalMatch: "matched",
+    });
+  });
+
+  test("preserves consultation when benchmarks are malformed", async () => {
+    const written = writeBenchmarkFiles({
+      requesterCoding: 60,
+      advisorCoding: 80,
+    });
+    writeFileSync(written.snapshotPath, "broken{{{");
+    const seams = benchmarkSeams(written);
+    const { client, calls } = stubGate(gateResponse(0.9));
+    const { runtime } = runtimeWith({ gateClient: client });
+    runtime.__advisorTest!.benchmarkStoreOptions = seams.storeOptions;
+
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Evidence check",
+      config: baseConfig({ benchmarks: seams.config }),
+    });
+
+    expect(text).toContain("advisor answer");
+    const sent = calls[0]?.state as Record<string, any>;
+    expect(sent.models.requester.provider).toBe("meta");
+    expect(sent.benchmarks.source).toBe("unavailable");
+    expect(
+      sent.benchmarks.comparisons.every(
+        (entry: { reason: string }) => entry.reason === "missing_requester",
+      ),
+    ).toBe(true);
+    expect(metricRecords()[0]?.benchmarks).toMatchObject({
+      source: "unavailable",
+    });
+  });
+
+  test("loads no benchmarks when the gate is bypassed", async () => {
+    const throwingFs = {
+      stat: async (): Promise<never> => {
+        throw new Error("benchmark loading is disabled on this path");
+      },
+      read: async (): Promise<never> => {
+        throw new Error("benchmark loading is disabled on this path");
+      },
+    };
+    const storeOptions = { env: {}, fs: throwingFs };
+
+    const keyless = runtimeWith({
+      gateClient: stubGate(gateResponse(0.05)).client,
+    });
+    keyless.runtime.__advisorTest!.benchmarkStoreOptions = storeOptions;
+    const keylessText = await runAdvisor({
+      runtime: keyless.runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Evidence check",
+      config: baseConfig({
+        typesafe: { enabled: false, settings: null, keyPresent: false },
+        typesafeSettings: null,
+      }),
+    });
+    expect(keylessText).toContain("advisor answer");
+
+    const disabled = runtimeWith({
+      gateClient: stubGate(gateResponse(0.05)).client,
+    });
+    disabled.runtime.__advisorTest!.benchmarkStoreOptions = storeOptions;
+    const disabledText = await runAdvisor({
+      runtime: disabled.runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Evidence check",
+      config: baseConfig({
+        typesafeSource: { disabled: true },
+        typesafe: { enabled: false, settings: null, keyPresent: true },
+        typesafeSettings: null,
+      }),
+    });
+    expect(disabledText).toContain("advisor answer");
+
+    setSessionModel("ses_fixture", {
+      providerID: "anthropic",
+      id: "claude-fable-9",
+    });
+    const fable = runtimeWith({
+      gateClient: stubGate(gateResponse(0.9)).client,
+    });
+    fable.runtime.__advisorTest!.benchmarkStoreOptions = storeOptions;
+    const fableText = await runAdvisor({
+      runtime: fable.runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Evidence check",
+      config: baseConfig(),
+    });
+    expect(fableText).toContain("already Fable");
+    expect(metricRecords().every((row) => row.benchmarks === undefined)).toBe(
+      true,
+    );
+  });
+
+  test("observes a refresh on the next invocation", async () => {
+    const first = writeBenchmarkFiles({
+      requesterCoding: 60,
+      advisorCoding: 80,
+    });
+    const seams = benchmarkSeams(first);
+    const { client, calls } = stubGate(gateResponse(0.05));
+    const { runtime } = runtimeWith({ gateClient: client });
+    runtime.__advisorTest!.benchmarkStoreOptions = seams.storeOptions;
+    const config = baseConfig({ benchmarks: seams.config });
+
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "First",
+      config,
+    });
+    const second = writeBenchmarkFiles({
+      requesterCoding: 60,
+      advisorCoding: 100,
+    });
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Second",
+      config,
+    });
+
+    expect(calls).toHaveLength(2);
+    const before = calls[0]?.state as Record<string, any>;
+    const after = calls[1]?.state as Record<string, any>;
+    expect(before.benchmarks.content_hash).toBe(first.contentHash);
+    expect(before.benchmarks.comparisons[0].advisor_minus_requester).toBe(20);
+    expect(after.benchmarks.content_hash).toBe(second.contentHash);
+    expect(after.benchmarks.comparisons[0].advisor_minus_requester).toBe(40);
+    expect(second.contentHash).not.toBe(first.contentHash);
+  });
+
+  test("falls back to ordinary behavior on combined failures", async () => {
+    const written = writeBenchmarkFiles({
+      requesterCoding: 60,
+      advisorCoding: 80,
+    });
+    writeFileSync(written.snapshotPath, "broken{{{");
+    const seams = benchmarkSeams(written);
+    const calls: SystemOneCall[] = [];
+    const client: GateClient = {
+      async systemOne(call) {
+        calls.push(call);
+        return { kind: "timeout", type: "timeout" };
+      },
+    };
+    const { runtime, generated } = runtimeWith({ gateClient: client });
+    runtime.__advisorTest!.benchmarkStoreOptions = seams.storeOptions;
+
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "review",
+      trigger: "pre_complete",
+      question: "Evidence check",
+      config: baseConfig({ benchmarks: seams.config }),
+    });
+
+    expect(text).toContain("advisor answer");
+    expect(generated).toHaveLength(1);
+    const row = metricRecords()[0]!;
+    expect(row.gate.status).toBe("fallback");
+    expect(row.benchmarks).toMatchObject({ source: "unavailable" });
+  });
+
+  test("records benchmark evidence on errors", async () => {
+    const written = writeBenchmarkFiles({
+      requesterCoding: 60,
+      advisorCoding: 80,
+    });
+    const seams = benchmarkSeams(written);
+    const { client } = stubGate(gateResponse(0.9));
+    const { runtime } = runtimeWith({
+      gateClient: client,
+      generate: async () => {
+        throw new Error("boom");
+      },
+    });
+    runtime.__advisorTest!.benchmarkStoreOptions = seams.storeOptions;
+
+    await expect(
+      runAdvisor({
+        runtime,
+        sessionId: "ses_fixture",
+        mode: "general",
+        question: "Evidence check",
+        config: baseConfig({ benchmarks: seams.config }),
+      }),
+    ).rejects.toThrow("advisor failed");
+
+    const row = metricRecords()[0]!;
+    expect(row.outcome).toBe("error");
+    expect(row.benchmarks).toMatchObject({
+      source: "user",
+      finalEffort: "xhigh",
+      finalMatch: "matched",
+    });
   });
 });

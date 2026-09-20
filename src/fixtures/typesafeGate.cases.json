@@ -1,5 +1,6 @@
 {
   "model": "jev-1.13.0",
+  "note": "Benchmark profiles in these cases are synthetic fixtures for evaluation only (fake model IDs and scores). They are never shipped data and never reach the plugin's real snapshot files.",
   "cases": [
     {
       "id": "routine-factual",
@@ -127,6 +128,428 @@
           ]
         },
         "history": { "priorConsultations": 1, "priorModes": ["review"] }
+      }
+    },
+    {
+      "id": "stronger-requester-review",
+      "expectation": "proceed",
+      "why": "A high-scoring requester still benefits from independent review on a concrete correctness concern; capability scores must not suppress it.",
+      "input": {
+        "mode": "review",
+        "trigger": "pre_complete",
+        "question": "Does the retry loop still double-charge when the second attempt times out?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "Add idempotency keys to the payment retry loop"
+        },
+        "context": {
+          "messages": [
+            "## User\nAdd idempotency keys to the payment retry loop",
+            "## Assistant\nThe second attempt reuses the key but a timeout path still retries without confirming the charge state"
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] },
+        "benchmarks": {
+          "models": {
+            "requester": {
+              "providerID": "synthetic-provider",
+              "modelID": "synthetic-requester",
+              "variant": "max",
+              "provenance": "invocation_message"
+            },
+            "advisor": {
+              "providerID": "synthetic-provider",
+              "modelID": "synthetic-advisor",
+              "policy": {
+                "kind": "candidates",
+                "candidates": ["high", "xhigh", "max"],
+                "fallback": "xhigh"
+              }
+            }
+          },
+          "benchmarks": {
+            "source": "user",
+            "fetchedAt": "2026-09-18T00:00:00.000Z",
+            "ageDays": 1,
+            "contentHash": "evaluation-fixture-synthetic",
+            "hashVerified": true,
+            "requesterMatch": {
+              "status": "matched",
+              "source": "local",
+              "aaModelID": "synthetic-aa-requester",
+              "evaluatedEffort": "max"
+            },
+            "advisorDefaultMatch": {
+              "status": "matched",
+              "source": "local",
+              "aaModelID": "synthetic-aa-advisor",
+              "evaluatedEffort": "max"
+            },
+            "advisorCandidates": [
+              {
+                "effort": "high",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              },
+              {
+                "effort": "xhigh",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              },
+              {
+                "effort": "max",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              }
+            ],
+            "comparisons": [
+              {
+                "key": "artificial_analysis_coding_index",
+                "label": "Artificial Analysis Coding Index",
+                "unit": "index_points",
+                "requester": 71,
+                "advisor": 72,
+                "advisorMinusRequester": 1,
+                "comparable": true,
+                "reason": null
+              },
+              {
+                "key": "hle",
+                "label": "HLE (Humanity's Last Exam)",
+                "unit": "fraction",
+                "requester": 0.42,
+                "advisor": 0.43,
+                "advisorMinusRequester": 0.01,
+                "comparable": true,
+                "reason": null
+              }
+            ],
+            "omitted": false
+          }
+        }
+      }
+    },
+    {
+      "id": "weaker-requester-trivial",
+      "expectation": "skip",
+      "why": "A weaker requester doing a one-field factual lookup still needs no advisor; a capability gap alone never creates need.",
+      "input": {
+        "mode": "general",
+        "trigger": "other",
+        "question": "Which npm script runs the typecheck?"
+      },
+      "state": {
+        "user": { "latestRequest": "Which script runs the typecheck?" },
+        "context": {
+          "messages": [
+            "## User\nWhich script runs the typecheck?",
+            "## Assistant\nReading package.json"
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] },
+        "benchmarks": {
+          "models": {
+            "requester": {
+              "providerID": "synthetic-provider",
+              "modelID": "synthetic-small",
+              "variant": null,
+              "provenance": "session_fallback"
+            },
+            "advisor": {
+              "providerID": "synthetic-provider",
+              "modelID": "synthetic-advisor",
+              "policy": {
+                "kind": "candidates",
+                "candidates": ["high", "xhigh", "max"],
+                "fallback": "xhigh"
+              }
+            }
+          },
+          "benchmarks": {
+            "source": "user",
+            "fetchedAt": "2026-09-18T00:00:00.000Z",
+            "ageDays": 1,
+            "contentHash": "evaluation-fixture-synthetic",
+            "hashVerified": true,
+            "requesterMatch": {
+              "status": "matched",
+              "source": "local",
+              "aaModelID": "synthetic-aa-small",
+              "evaluatedEffort": "max"
+            },
+            "advisorDefaultMatch": {
+              "status": "matched",
+              "source": "local",
+              "aaModelID": "synthetic-aa-advisor",
+              "evaluatedEffort": "max"
+            },
+            "advisorCandidates": [
+              {
+                "effort": "high",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              },
+              {
+                "effort": "xhigh",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              },
+              {
+                "effort": "max",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              }
+            ],
+            "comparisons": [
+              {
+                "key": "artificial_analysis_coding_index",
+                "label": "Artificial Analysis Coding Index",
+                "unit": "index_points",
+                "requester": 41,
+                "advisor": 72,
+                "advisorMinusRequester": 31,
+                "comparable": true,
+                "reason": null
+              },
+              {
+                "key": "hle",
+                "label": "HLE (Humanity's Last Exam)",
+                "unit": "fraction",
+                "requester": 0.18,
+                "advisor": 0.43,
+                "advisorMinusRequester": 0.25,
+                "comparable": true,
+                "reason": null
+              }
+            ],
+            "omitted": false
+          }
+        }
+      }
+    },
+    {
+      "id": "unknown-scores-stuck",
+      "expectation": "proceed",
+      "why": "Unresolved debugging with missing benchmark coverage must preserve consultation; unknown scores are uncertainty, not evidence.",
+      "input": {
+        "mode": "debug",
+        "trigger": "stuck",
+        "question": "Why does the cache miss every request after a deploy?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "The cache misses every request after a deploy and logs show no invalidation"
+        },
+        "context": {
+          "messages": [
+            "## User\nThe cache misses every request after a deploy",
+            "## Assistant\nLogs show no invalidation events; cache stats show zero hits since the rollout"
+          ]
+        },
+        "history": { "priorConsultations": 1, "priorModes": ["debug"] },
+        "benchmarks": {
+          "models": {
+            "requester": {
+              "providerID": "synthetic-provider",
+              "modelID": "synthetic-unmapped",
+              "variant": "high",
+              "provenance": "invocation_message"
+            },
+            "advisor": {
+              "providerID": "synthetic-provider",
+              "modelID": "synthetic-advisor",
+              "policy": {
+                "kind": "candidates",
+                "candidates": ["high", "xhigh", "max"],
+                "fallback": "xhigh"
+              }
+            }
+          },
+          "benchmarks": {
+            "source": "user",
+            "fetchedAt": "2026-09-18T00:00:00.000Z",
+            "ageDays": 1,
+            "contentHash": "evaluation-fixture-synthetic",
+            "hashVerified": true,
+            "requesterMatch": {
+              "status": "unmapped",
+              "source": null,
+              "aaModelID": null,
+              "evaluatedEffort": null
+            },
+            "advisorDefaultMatch": {
+              "status": "matched",
+              "source": "local",
+              "aaModelID": "synthetic-aa-advisor",
+              "evaluatedEffort": "max"
+            },
+            "advisorCandidates": [
+              {
+                "effort": "high",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              },
+              {
+                "effort": "xhigh",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              },
+              {
+                "effort": "max",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              }
+            ],
+            "comparisons": [
+              {
+                "key": "artificial_analysis_coding_index",
+                "label": "Artificial Analysis Coding Index",
+                "unit": "index_points",
+                "requester": null,
+                "advisor": 72,
+                "advisorMinusRequester": null,
+                "comparable": false,
+                "reason": "missing_requester"
+              },
+              {
+                "key": "hle",
+                "label": "HLE (Humanity's Last Exam)",
+                "unit": "fraction",
+                "requester": null,
+                "advisor": 0.43,
+                "advisorMinusRequester": null,
+                "comparable": false,
+                "reason": "missing_requester"
+              }
+            ],
+            "omitted": false
+          }
+        }
+      }
+    },
+    {
+      "id": "stale-snapshot-review",
+      "expectation": "proceed",
+      "why": "Stale benchmark data is context, not a skip reason; the review concern stands on its own.",
+      "input": {
+        "mode": "review",
+        "trigger": "pre_complete",
+        "question": "Is the migration ordering safe if the second job starts before the first commits?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "Split the migration into two jobs and run them in sequence"
+        },
+        "context": {
+          "messages": [
+            "## User\nSplit the migration into two jobs",
+            "## Assistant\nThe second job reads rows the first job writes; ordering is only enforced by the runner"
+          ]
+        },
+        "history": { "priorConsultations": 0, "priorModes": [] },
+        "benchmarks": {
+          "models": {
+            "requester": {
+              "providerID": "synthetic-provider",
+              "modelID": "synthetic-requester",
+              "variant": "high",
+              "provenance": "invocation_message"
+            },
+            "advisor": {
+              "providerID": "synthetic-provider",
+              "modelID": "synthetic-advisor",
+              "policy": {
+                "kind": "candidates",
+                "candidates": ["high", "xhigh", "max"],
+                "fallback": "xhigh"
+              }
+            }
+          },
+          "benchmarks": {
+            "source": "user",
+            "fetchedAt": "2026-05-01T00:00:00.000Z",
+            "ageDays": 141,
+            "contentHash": "evaluation-fixture-synthetic",
+            "hashVerified": true,
+            "requesterMatch": {
+              "status": "matched",
+              "source": "local",
+              "aaModelID": "synthetic-aa-requester",
+              "evaluatedEffort": "max"
+            },
+            "advisorDefaultMatch": {
+              "status": "matched",
+              "source": "local",
+              "aaModelID": "synthetic-aa-advisor",
+              "evaluatedEffort": "max"
+            },
+            "advisorCandidates": [
+              {
+                "effort": "high",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              },
+              {
+                "effort": "xhigh",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              },
+              {
+                "effort": "max",
+                "status": "matched",
+                "source": "local",
+                "aaModelID": "synthetic-aa-advisor",
+                "evaluatedEffort": "max"
+              }
+            ],
+            "comparisons": [
+              {
+                "key": "artificial_analysis_coding_index",
+                "label": "Artificial Analysis Coding Index",
+                "unit": "index_points",
+                "requester": 65,
+                "advisor": 72,
+                "advisorMinusRequester": 7,
+                "comparable": true,
+                "reason": null
+              },
+              {
+                "key": "hle",
+                "label": "HLE (Humanity's Last Exam)",
+                "unit": "fraction",
+                "requester": 0.35,
+                "advisor": 0.43,
+                "advisorMinusRequester": 0.08,
+                "comparable": true,
+                "reason": null
+              }
+            ],
+            "omitted": false
+          }
+        }
       }
     }
   ]

@@ -6,6 +6,10 @@
 // boundaries to a byte budget, and reported with explicit coverage flags so
 // the gate can treat omitted context as uncertainty rather than evidence.
 import { Database } from "bun:sqlite";
+import type {
+  EvidenceBenchmarks,
+  EvidenceModels,
+} from "./benchmarkEvidence.js";
 
 export interface TypeSafeSettings {
   model?: string;
@@ -201,6 +205,14 @@ export interface DecisionState {
     supportedEfforts: string[];
     defaultEffort: string | null;
   };
+  // Invocation-correct model identities. Durable header content: trimming
+  // never drops these while a consultation proceeds.
+  models: EvidenceModels | null;
+  // Benchmark evidence for the same consultation, or null when enrichment
+  // was unavailable. Score detail trims before task context under budget
+  // pressure; `omitted` marks detail dropped this way, while
+  // `coverage.benchmarksOmitted` marks the whole block dropped.
+  benchmarks: EvidenceBenchmarks | null;
   coverage: {
     truncated: boolean;
     droppedMessages: number;
@@ -208,6 +220,7 @@ export interface DecisionState {
     totalMessages: number;
     stateBytes: number;
     maxStateBytes: number;
+    benchmarksOmitted: boolean;
   };
 }
 
@@ -224,6 +237,8 @@ export interface BuildDecisionStateOptions {
   supportedEfforts: string[];
   defaultEffort?: string | null;
   maxStateBytes?: number;
+  models?: EvidenceModels | null;
+  benchmarks?: EvidenceBenchmarks | null;
   formatMessage?: (type: string, data: Record<string, any>) => string | null;
 }
 
@@ -256,6 +271,8 @@ export function makeDecisionState(
       supportedEfforts: [...options.supportedEfforts],
       defaultEffort: options.defaultEffort ?? null,
     },
+    models: options.models ?? null,
+    benchmarks: options.benchmarks ?? null,
     coverage: {
       truncated: false,
       droppedMessages: 0,
@@ -263,6 +280,7 @@ export function makeDecisionState(
       totalMessages: 0,
       stateBytes: 0,
       maxStateBytes: options.maxStateBytes ?? 0,
+      benchmarksOmitted: false,
     },
   };
 }
@@ -389,9 +407,18 @@ export function buildDecisionState(
   base.user.latestRequest = latestRequest;
   base.context.latestUserIncluded = latestRequest !== null;
   base.coverage.totalMessages = entries.length;
-  if (!options.formatMessage) return base;
-
   const maxBytes = options.maxStateBytes ?? Infinity;
+  // Verbose benchmark detail yields before task context: score comparisons
+  // drop first (identities and match coverage stay), then the whole
+  // benchmark block with an explicit omission flag.
+  if (base.benchmarks && byteLength(base) > maxBytes) {
+    base.benchmarks = { ...base.benchmarks, comparisons: [], omitted: true };
+  }
+  if (base.benchmarks && byteLength(base) > maxBytes) {
+    base.benchmarks = null;
+    base.coverage.benchmarksOmitted = true;
+  }
+  if (!options.formatMessage) return base;
   const rendered: Array<string | null> = entries.map((entry) =>
     messageText(entry, options.formatMessage ?? (() => null)),
   );

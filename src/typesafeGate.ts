@@ -6,6 +6,8 @@
 // timeouts, transport errors, malformed answers, and missing credentials all
 // fall back to the ordinary advisor behavior.
 import { TypeSafeClient, choice, noul } from "@typesafe-ai/sdk";
+import type { CompactMatch } from "./benchmarkEvidence.js";
+import type { AdvisorEffortPolicy } from "./modelProfiles.js";
 import {
   makeDecisionState,
   type DecisionState,
@@ -38,11 +40,13 @@ export const NEEDED_INSTRUCTIONS = `Given the request below, would an independen
 A consultation can help at several different checkpoints; prior consultations are context, not a quota.
 Repeat consultations are useful when evidence, the approach, or the concern under review has changed.
 Judge the evidence actually present. Missing or truncated context is uncertainty, not evidence that consultation is unnecessary.
-A concrete question awaiting an independent second opinion usually qualifies, even when the agent is not stuck.`;
+A concrete question awaiting an independent second opinion usually qualifies, even when the agent is not stuck.
+Model capability evidence: \`models\` identifies the requesting and advisor models; \`benchmarks.comparisons\` shows Artificial Analysis scores on the same metrics with oriented differences (positive favors the advisor) at the advisor's default effort. Treat scores as rough capability evidence, not certainty about this task: a stronger requester can still benefit from independent review, and a weaker requester still needs no advice for trivial work. Unknown, mismatched, or stale scores are uncertainty, never evidence against consultation.`;
 
 export const EFFORT_INSTRUCTIONS = `Assuming this consultation proceeds, which effort level is appropriate for this specific decision or review?
 Choose from the supplied levels based on reasoning difficulty, uncertainty, interacting components, and consequences, not transcript length.
-This question is independent of whether consultation should happen.`;
+This question is independent of whether consultation should happen.
+\`models.advisor\` lists the allowed efforts with each effort's benchmark coverage; weigh coverage alongside difficulty, and treat missing coverage as uncertainty rather than disqualification.`;
 
 export class TypeSafeGateError extends Error {
   readonly kind: "caller_abort" | "gate_error";
@@ -233,6 +237,32 @@ function questionText(question: string | null): string | null {
     : question;
 }
 
+function projectMatch(match: CompactMatch): Record<string, unknown> {
+  return {
+    status: match.status,
+    source: match.source,
+    aa_model: match.aaModelID,
+    evaluated_effort: match.evaluatedEffort,
+  };
+}
+
+function projectEffortPolicy(
+  policy: AdvisorEffortPolicy,
+): Record<string, unknown> {
+  switch (policy.kind) {
+    case "pinned":
+      return { kind: "pinned", effort: policy.effort };
+    case "candidates":
+      return {
+        kind: "candidates",
+        candidates: [...policy.candidates],
+        fallback: policy.fallback,
+      };
+    case "fixed":
+      return { kind: "fixed", effort: policy.effort };
+  }
+}
+
 function buildStatePayload(state: DecisionState): Record<string, unknown> {
   return {
     request: {
@@ -242,6 +272,51 @@ function buildStatePayload(state: DecisionState): Record<string, unknown> {
       explicitEffort: state.request.explicitEffort,
       caller: state.request.caller,
     },
+    models: state.models
+      ? {
+          requester: {
+            provider: state.models.requester.providerID,
+            model: state.models.requester.modelID,
+            effort: state.models.requester.variant,
+            provenance: state.models.requester.provenance,
+          },
+          advisor: {
+            provider: state.models.advisor.providerID,
+            model: state.models.advisor.modelID,
+            effort_policy: projectEffortPolicy(state.models.advisor.policy),
+          },
+        }
+      : null,
+    benchmarks: state.benchmarks
+      ? {
+          source: state.benchmarks.source,
+          fetched_at: state.benchmarks.fetchedAt,
+          age_days: state.benchmarks.ageDays,
+          content_hash: state.benchmarks.contentHash,
+          hash_verified: state.benchmarks.hashVerified,
+          requester_match: projectMatch(state.benchmarks.requesterMatch),
+          advisor_default_match: projectMatch(
+            state.benchmarks.advisorDefaultMatch,
+          ),
+          advisor_candidates: state.benchmarks.advisorCandidates.map(
+            (entry) => ({
+              effort: entry.effort,
+              ...projectMatch(entry),
+            }),
+          ),
+          comparisons: state.benchmarks.comparisons.map((entry) => ({
+            metric: entry.key,
+            label: entry.label,
+            unit: entry.unit,
+            requester: entry.requester,
+            advisor: entry.advisor,
+            advisor_minus_requester: entry.advisorMinusRequester,
+            comparable: entry.comparable,
+            reason: entry.reason,
+          })),
+          omitted: state.benchmarks.omitted,
+        }
+      : null,
     latest_user_request: state.user.latestRequest,
     recent_messages: state.context.messages,
     prior_consultations: {
@@ -254,6 +329,7 @@ function buildStatePayload(state: DecisionState): Record<string, unknown> {
       messages_included: state.coverage.includedMessages,
       total_messages: state.coverage.totalMessages,
       latest_user_included: state.context.latestUserIncluded,
+      benchmarks_omitted: state.coverage.benchmarksOmitted,
     },
   };
 }

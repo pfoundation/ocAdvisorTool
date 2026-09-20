@@ -32,6 +32,9 @@ jobs:
 
       - run: bun run build
 
+      # Re-run after the build so dist-dependent package tests execute.
+      - run: bun test
+
       - name: Verify build entrypoint
         run: >
           bun -e 'const root = Bun.resolveSync("./index", ".");
@@ -39,6 +42,9 @@ jobs:
           const compiled = (await import("./dist/index.js")).default;
           if (shim.id !== "oc-advisor" || typeof shim.setup !== "function" || "server" in shim) throw new Error("bad root shim entrypoint");
           if (compiled.id !== "oc-advisor" || typeof compiled.setup !== "function" || "server" in compiled) throw new Error("bad compiled entrypoint");
+          if (!(await Bun.file("./dist/cli.js").exists())) throw new Error("missing dist/cli.js");
+          const text = await Bun.file("./dist/cli.js").text();
+          if (!text.startsWith("#!/usr/bin/env bun\n")) throw new Error("dist/cli.js is not a bun executable");
           console.log("entrypoint OK:", shim.id, "via", root);'
 
       - name: Verify tarball contents
@@ -47,4 +53,7 @@ jobs:
           bun -e 'const pack = (await Bun.file("/tmp/pack.json").json())[0];
           const bad = pack.files.filter((f) => !/^(package\.json|README\.md|LICENSE|dist\/)/.test(f.path) || /test|usageReport/i.test(f.path));
           if (bad.length > 0) { console.error("unexpected files:", bad); process.exit(1); }
+          for (const required of ["dist/cli.js", "dist/data/artificialAnalysis.mappings.json"]) {
+            if (!pack.files.some((f) => f.path === required)) { console.error("missing packaged file:", required); process.exit(1); }
+          }
           console.log("pack OK:", pack.files.length, "files");'

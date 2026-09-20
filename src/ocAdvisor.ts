@@ -1,7 +1,27 @@
 import { Database } from "bun:sqlite";
 import { appendFile } from "fs/promises";
 import { homedir } from "os";
-import { join } from "path";
+import { isAbsolute, join } from "path";
+import type { BenchmarkPathOptions } from "./benchmarkConfig.js";
+import { resolveBenchmarkPaths } from "./benchmarkConfig.js";
+import {
+  buildBenchmarkEvidence,
+  type EvidenceBenchmarks,
+  type EvidenceModels,
+} from "./benchmarkEvidence.js";
+import type { MatchStatus } from "./benchmarkMatch.js";
+import {
+  createBenchmarkStore,
+  type BenchmarkFileSystem,
+  type BenchmarkStore,
+  type BenchmarkView,
+} from "./benchmarkStore.js";
+import {
+  resolveAdvisorProfile,
+  resolveRequesterProfile,
+  type AdvisorProfile,
+  type RequesterProfile,
+} from "./modelProfiles.js";
 import {
   runTypeSafeGate,
   type GateClient,
@@ -44,7 +64,8 @@ const FABLE_DISABLED =
 // or, for symlink/auto-discovered installs that cannot receive options,
 // via environment variables (OCADVISOR_MODEL, OCADVISOR_PROVIDER,
 // OCADVISOR_VARIANT, OCADVISOR_TIMEOUT_MS, OCADVISOR_MAX_TRANSCRIPT_CHARS,
-// OCADVISOR_AGENT_EFFORT).
+// OCADVISOR_AGENT_EFFORT, OCADVISOR_BENCHMARKS_PATH,
+// OCADVISOR_BENCHMARK_MAPPINGS_PATH).
 // Defaults preserve the original behavior: anthropic/claude-fable-5-1#xhigh.
 interface AdvisorConfig {
   provider: string;
@@ -57,6 +78,10 @@ interface AdvisorConfig {
   // Matching ignores effort variants. Empty means no configured exclusions;
   // the Fable self-consultation guard still applies.
   disabledForModels: string[];
+  // Explicit benchmark file locations. Each field falls back to its
+  // environment variable, then the shared data-directory default; empty
+  // means fully default.
+  benchmarks: BenchmarkPathOptions;
   // Optional TypeSafe preflight. `typesafeSource` is the normalized plugin
   // option; `typesafe`/`typesafeSettings` hold the resolved runtime view
   // (enabled only when the SDK's own TYPESAFE_API_KEY is present).
@@ -73,6 +98,7 @@ const DEFAULT_ADVISOR_CONFIG: AdvisorConfig = {
   maxTranscriptChars: 0,
   agentEffort: null,
   disabledForModels: [],
+  benchmarks: {},
   typesafeSource: { disabled: false, overrides: {} },
   typesafe: { enabled: false, settings: null, keyPresent: false },
   typesafeSettings: null,
@@ -89,6 +115,7 @@ interface AdvisorConfigSource {
   agentEffort?: unknown;
   agent_effort?: unknown;
   disabledForModels?: unknown;
+  benchmarks?: unknown;
   typesafe?: unknown;
 }
 
@@ -166,6 +193,33 @@ function normalizeDisabledForModels(value: unknown): string[] | undefined {
   return [...new Set(refs)];
 }
 
+// `{ path, mappingsPath }` with absolute locations. `undefined`/`null`
+// means "not set"; blank entries are dropped; unknown keys are ignored.
+// Invalid explicit values throw so misconfiguration fails fast at setup
+// instead of silently degrading to default benchmark data.
+function normalizeBenchmarks(value: unknown): BenchmarkPathOptions | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("benchmarks must be an object with path options.");
+  }
+  const raw = value as Record<string, unknown>;
+  const out: BenchmarkPathOptions = {};
+  for (const key of ["path", "mappingsPath"] as const) {
+    const entry = raw[key];
+    if (entry === undefined || entry === null) continue;
+    if (typeof entry !== "string") {
+      throw new Error(`benchmarks.${key} must be an absolute path.`);
+    }
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    if (!isAbsolute(trimmed)) {
+      throw new Error(`benchmarks.${key} must be an absolute path.`);
+    }
+    out[key] = trimmed;
+  }
+  return out;
+}
+
 function toBoundedInt(value: unknown, min: number): number | undefined {
   const raw =
     typeof value === "number"
@@ -235,6 +289,12 @@ function applyAdvisorConfigSource(
   if (disabledForModels !== undefined) {
     next.disabledForModels = disabledForModels;
   }
+  // Benchmark paths merge per field so a plugin option can override one
+  // location while the other still falls back to the environment default.
+  const benchmarks = normalizeBenchmarks(src.benchmarks);
+  if (benchmarks !== undefined) {
+    next.benchmarks = { ...next.benchmarks, ...benchmarks };
+  }
   const timeout = toBoundedInt(src.timeoutMs ?? src.timeout_ms, 1);
   if (timeout !== undefined) next.timeoutMs = timeout;
   const cap = toBoundedInt(
@@ -265,6 +325,14 @@ function envAdvisorConfigSource(
     maxTranscriptChars: env.OCADVISOR_MAX_TRANSCRIPT_CHARS,
     agentEffort: env.OCADVISOR_AGENT_EFFORT,
     disabledForModels: env.OCADVISOR_DISABLED_FOR_MODELS,
+    benchmarks:
+      env.OCADVISOR_BENCHMARKS_PATH === undefined &&
+      env.OCADVISOR_BENCHMARK_MAPPINGS_PATH === undefined
+        ? undefined
+        : {
+            path: env.OCADVISOR_BENCHMARKS_PATH,
+            mappingsPath: env.OCADVISOR_BENCHMARK_MAPPINGS_PATH,
+          },
   };
 }
 
@@ -387,6 +455,22 @@ interface AdvisorMetrics {
   priorConsultations: number;
   via: string;
   gate?: GateRecord;
+  benchmarks?: BenchmarkMetricsSummary;
+}
+
+// Compact benchmark evidence for the metrics log. Older rows omit the
+// whole field; reports must treat it as optional.
+interface BenchmarkMetricsSummary {
+  source: "user" | "seed" | "unavailable";
+  contentHash: string | null;
+  fetchedAt: string | null;
+  hashVerified: boolean;
+  requester: string | null;
+  requesterMatch: MatchStatus | null;
+  advisorPolicy: string | null;
+  advisorMatch: MatchStatus | null;
+  finalEffort: string | null;
+  finalMatch: MatchStatus | null;
 }
 
 const ADVISOR_INPUT_SCHEMA = {
@@ -461,6 +545,7 @@ interface SessionModel {
   modelID?: string;
   providerID?: string;
   provider?: string;
+  variant?: string;
 }
 
 interface SessionInfo {
@@ -484,6 +569,10 @@ interface V2PluginContext {
     provider?: { get?: Function; list?: Function };
     model?: { list?: Function };
   };
+  // Documented V2 discovery domains; preferred over the legacy catalog
+  // namespace above when both exist.
+  model?: { list?: Function };
+  provider?: { get?: Function; list?: Function };
   integration?: { connection?: { active?: Function } };
   storage?: { get?: Function; set?: Function };
   // Test seam: inject a gate client and environment without touching the
@@ -495,6 +584,17 @@ interface V2PluginContext {
     gateFetch?: typeof fetch;
     dbPath?: string;
     metricsPath?: string;
+    profileSink?: (profiles: {
+      requester: RequesterProfile;
+      advisor: AdvisorProfile;
+    }) => void;
+    benchmarkStoreOptions?: {
+      env?: Record<string, string | undefined>;
+      fs?: BenchmarkFileSystem;
+      seedSnapshotPath?: string;
+      seedMappingsPath?: string;
+      maxBytes?: number;
+    };
   };
 }
 
@@ -1302,17 +1402,51 @@ function hasAdvisorConnection(connection: unknown): boolean {
   return true;
 }
 
+// Discovery namespaces: the documented V2 `model`/`provider` domains win,
+// the legacy `catalog` namespace stays for older servers and fixtures.
+// Calls stay in method form so any receiver-bound implementation keeps
+// working.
+function discoveryModelApi(
+  runtime: V2PluginContext,
+): { list: Function } | null {
+  if (runtime.model && typeof runtime.model.list === "function") {
+    return runtime.model as { list: Function };
+  }
+  if (
+    runtime.catalog?.model &&
+    typeof runtime.catalog.model.list === "function"
+  ) {
+    return runtime.catalog.model as { list: Function };
+  }
+  return null;
+}
+
+function discoveryProviderApi(
+  runtime: V2PluginContext,
+): { get: Function } | null {
+  if (runtime.provider && typeof runtime.provider.get === "function") {
+    return runtime.provider as { get: Function };
+  }
+  if (
+    runtime.catalog?.provider &&
+    typeof runtime.catalog.provider.get === "function"
+  ) {
+    return runtime.catalog.provider as { get: Function };
+  }
+  return null;
+}
+
 // Shared by support checks and the effort gate; null means discovery is
 // unavailable or the configured model was not found.
 async function findAdvisorCatalogModel(
   runtime: V2PluginContext,
   config: AdvisorConfig,
 ): Promise<CatalogModelRef | null> {
-  if (typeof runtime.catalog?.model?.list !== "function") return null;
+  const api = discoveryModelApi(runtime);
+  if (!api) return null;
   try {
     const models = unwrapData(
-      (await runtime.catalog.model.list()) as
-        CatalogModelRef[] | { data: CatalogModelRef[] },
+      (await api.list()) as CatalogModelRef[] | { data: CatalogModelRef[] },
     );
     return findAdvisorModel(models, config);
   } catch {
@@ -1329,11 +1463,12 @@ async function checkAdvisorSupport(
   config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
   requestedVariant?: string,
 ): Promise<AdvisorSupport> {
-  if (typeof runtime.catalog?.provider?.get === "function") {
+  const providerApi = discoveryProviderApi(runtime);
+  if (providerApi) {
     let provider: { activation?: string } | null = null;
     try {
       provider = unwrapData(
-        (await runtime.catalog.provider.get({
+        (await providerApi.get({
           providerID: config.provider,
         })) as { activation?: string } | { data: { activation?: string } },
       );
@@ -1352,11 +1487,12 @@ async function checkAdvisorSupport(
   }
 
   let variant: string | undefined = requestedVariant ?? config.variant;
-  if (typeof runtime.catalog?.model?.list === "function") {
+  const modelApi = discoveryModelApi(runtime);
+  if (modelApi) {
     let models: CatalogModelRef[] | null = null;
     try {
       models = unwrapData(
-        (await runtime.catalog.model.list()) as
+        (await modelApi.list()) as
           CatalogModelRef[] | { data: CatalogModelRef[] },
       );
     } catch (err) {
@@ -1721,6 +1857,116 @@ async function callAdvisor(opts: {
   };
 }
 
+// Benchmark stores live for the process, keyed by resolved user paths (and
+// test seed overrides), so every consultation observes CLI refreshes
+// without re-reading unchanged files. Tests reset between cases.
+const benchmarkStores = new Map<string, BenchmarkStore>();
+
+function resetBenchmarkStores(): void {
+  benchmarkStores.clear();
+}
+
+function benchmarkStoreKey(
+  snapshotPath: string,
+  mappingsPath: string,
+  seedSnapshotPath?: string,
+  seedMappingsPath?: string,
+): string {
+  return [
+    snapshotPath,
+    mappingsPath,
+    seedSnapshotPath ?? "",
+    seedMappingsPath ?? "",
+  ].join("\n");
+}
+
+interface LoadedBenchmarkEvidence {
+  view: BenchmarkView;
+  evidence: { models: EvidenceModels; benchmarks: EvidenceBenchmarks };
+}
+
+// Loads one consistent benchmark view and assembles gate evidence from it.
+// Any failure (bad paths, unreadable files, unexpected errors) yields null
+// and the consultation proceeds without benchmark enrichment.
+async function loadBenchmarkEvidence(
+  runtime: V2PluginContext | null | undefined,
+  config: AdvisorConfig,
+  requester: RequesterProfile,
+  advisor: AdvisorProfile,
+): Promise<LoadedBenchmarkEvidence | null> {
+  try {
+    const testOpts = runtime?.__advisorTest?.benchmarkStoreOptions;
+    const paths = resolveBenchmarkPaths(
+      config.benchmarks,
+      testOpts?.env ?? process.env,
+    );
+    if ("error" in paths) return null;
+    const key = benchmarkStoreKey(
+      paths.snapshotPath,
+      paths.mappingsPath,
+      testOpts?.seedSnapshotPath,
+      testOpts?.seedMappingsPath,
+    );
+    let store = benchmarkStores.get(key);
+    if (!store) {
+      store = await createBenchmarkStore({
+        snapshotPath: paths.snapshotPath,
+        mappingsPath: paths.mappingsPath,
+        seedSnapshotPath: testOpts?.seedSnapshotPath,
+        seedMappingsPath: testOpts?.seedMappingsPath,
+        fs: testOpts?.fs,
+        maxBytes: testOpts?.maxBytes,
+      });
+      benchmarkStores.set(key, store);
+    }
+    const view = await store.view();
+    return {
+      view,
+      evidence: buildBenchmarkEvidence({ requester, advisor, view }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function summarizeBenchmarkEvidence(
+  loaded: LoadedBenchmarkEvidence | null,
+  finalEffort: string | null,
+): BenchmarkMetricsSummary | undefined {
+  if (!loaded) return undefined;
+  const { view, evidence } = loaded;
+  const { requester, advisor } = evidence.models;
+  const policy = advisor.policy;
+  const finalMatch =
+    finalEffort === null
+      ? null
+      : view.matcher.match({
+          providerID: advisor.providerID,
+          modelID: advisor.modelID,
+          variant: finalEffort,
+        }).status;
+  return {
+    source: evidence.benchmarks.source,
+    contentHash: evidence.benchmarks.contentHash,
+    fetchedAt: evidence.benchmarks.fetchedAt,
+    hashVerified: evidence.benchmarks.hashVerified,
+    requester:
+      requester.providerID && requester.modelID
+        ? `${requester.providerID}/${requester.modelID}${requester.variant ? `#${requester.variant}` : ""} (${requester.provenance})`
+        : null,
+    requesterMatch: evidence.benchmarks.requesterMatch.status,
+    advisorPolicy:
+      policy.kind === "pinned"
+        ? `pinned:${policy.effort}`
+        : policy.kind === "candidates"
+          ? `candidates:${policy.candidates.join(",")}>${policy.fallback ?? "none"}`
+          : `fixed:${policy.effort ?? "none"}`,
+    advisorMatch: evidence.benchmarks.advisorDefaultMatch.status,
+    finalEffort,
+    finalMatch,
+  };
+}
+
 async function runAdvisor(opts: {
   runtime: V2PluginContext | null | undefined;
   sessionId?: string;
@@ -1731,6 +1977,8 @@ async function runAdvisor(opts: {
   signal?: AbortSignal;
   callerAgent?: string;
   callerDirectory?: string;
+  callerMessageID?: string;
+  callerCallID?: string;
   config?: AdvisorConfig;
 }): Promise<string> {
   const started = Date.now();
@@ -1835,6 +2083,16 @@ async function runAdvisor(opts: {
         transcript.slice(-config.maxTranscriptChars);
     }
 
+    // Invocation-correct requester identity for benchmark matching: the
+    // model that produced this tool call, resolved after the early guards
+    // so skipped calls pay for no extra reads.
+    const requesterProfile = resolveRequesterProfile(db, {
+      sessionId,
+      messageID: opts.callerMessageID,
+      callID: opts.callerCallID,
+      sessionModel: info?.model ?? null,
+    });
+
     const prior = countPriorAdvisorCalls(db, sessionId);
     const priorNote =
       prior.count > 0
@@ -1845,6 +2103,7 @@ async function runAdvisor(opts: {
     let requestedEffort: string | undefined;
     let effectiveEffort: string | undefined;
     let gateRecord: GateRecord | undefined;
+    let benchmarkLoaded: LoadedBenchmarkEvidence | null = null;
     try {
       requestedEffort = resolveRequestedEffort(config, opts.effort);
 
@@ -1853,13 +2112,30 @@ async function runAdvisor(opts: {
       // did not pin an effort, which supported effort fits. Gate failures
       // fall back to the ordinary behavior and never fail the call.
       let gateDecision: GateDecision | null = null;
+      let advisorProfile: AdvisorProfile | null = null;
       if (config.typesafe.keyPresent && !config.typesafeSource.disabled) {
         const catalogModel = await findAdvisorCatalogModel(
           opts.runtime as V2PluginContext,
           config,
         );
         const supportedEfforts = resolveSupportedEfforts(catalogModel, config);
+        advisorProfile = resolveAdvisorProfile({
+          providerID: config.provider,
+          modelID: config.model,
+          requestedEffort,
+          supportedEfforts,
+          defaultEffort:
+            requestedEffort ??
+            resolveAdvisorVariant(catalogModel, config) ??
+            null,
+        });
         const gateSettings = config.typesafe.settings ?? TYPESAFE_DEFAULTS;
+        benchmarkLoaded = await loadBenchmarkEvidence(
+          opts.runtime,
+          config,
+          requesterProfile,
+          advisorProfile,
+        );
         gateDecision = await runTypeSafeGate({
           state: buildDecisionState(db, sessionId, {
             question: opts.question ?? null,
@@ -1874,6 +2150,8 @@ async function runAdvisor(opts: {
             supportedEfforts,
             defaultEffort: requestedEffort ?? config.variant ?? null,
             maxStateBytes: gateSettings.maxStateBytes,
+            models: benchmarkLoaded?.evidence.models ?? null,
+            benchmarks: benchmarkLoaded?.evidence.benchmarks ?? null,
             formatMessage: formatV2Message,
           }),
           input: {
@@ -1893,6 +2171,21 @@ async function runAdvisor(opts: {
         });
         gateRecord = gateRecordFrom(gateDecision);
       }
+
+      // Profiles resolve for every consultation: with discovery the advisor
+      // policy reflects live variants, otherwise it fixes to the configured
+      // effort (or the caller's pin).
+      advisorProfile ??= resolveAdvisorProfile({
+        providerID: config.provider,
+        modelID: config.model,
+        requestedEffort,
+        supportedEfforts: [],
+        defaultEffort: config.variant ?? null,
+      });
+      opts.runtime?.__advisorTest?.profileSink?.({
+        requester: requesterProfile,
+        advisor: advisorProfile,
+      });
 
       if (gateDecision?.status === "skip") {
         const latencyMs = Date.now() - started;
@@ -1915,6 +2208,7 @@ async function runAdvisor(opts: {
           priorConsultations: prior.count,
           via: "opencode-session",
           gate: gateRecord,
+          benchmarks: summarizeBenchmarkEvidence(benchmarkLoaded, null),
         });
         console.log(
           `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=skipped_typesafe needed=${gateDecision.metrics.neededProbability ?? "n/a"} latencyMs=${latencyMs}`,
@@ -1962,6 +2256,10 @@ async function runAdvisor(opts: {
         priorConsultations: prior.count,
         via: "opencode-session",
         gate: gateRecord,
+        benchmarks: summarizeBenchmarkEvidence(
+          benchmarkLoaded,
+          result.variant ?? effectiveEffort ?? requestedEffort ?? null,
+        ),
       });
       console.log(
         `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=advisor_response latencyMs=${latencyMs}`,
@@ -1995,6 +2293,10 @@ async function runAdvisor(opts: {
         priorConsultations: prior.count,
         via: "opencode-session",
         gate: gateRecord,
+        benchmarks: summarizeBenchmarkEvidence(
+          benchmarkLoaded,
+          effectiveEffort ?? requestedEffort ?? null,
+        ),
       });
       console.log(
         `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=error errorType=${errorType} latencyMs=${latencyMs}`,
@@ -2043,6 +2345,8 @@ export async function setupOcAdvisorV2(
               agent?: string;
               directory?: string;
               abort?: AbortSignal;
+              messageID?: string;
+              id?: string;
             },
           ) {
             const text = await runAdvisor({
@@ -2055,6 +2359,8 @@ export async function setupOcAdvisorV2(
               signal: context.abort,
               callerAgent: context.agent,
               callerDirectory: context.directory,
+              callerMessageID: context.messageID,
+              callerCallID: context.id,
               config: advisorConfig,
             });
             return { content: text };
@@ -2145,6 +2451,7 @@ export {
   resolveRequestedEffort,
   resolveSupportedEfforts,
   resetAdvisorSessionCache,
+  resetBenchmarkStores,
   unwrapData,
   withTimeout,
   formatV2Message,
@@ -2154,6 +2461,8 @@ export type {
   AdvisorConfig,
   AdvisorOutcome,
   AdvisorTrigger,
+  BenchmarkMetricsSummary,
+  LoadedBenchmarkEvidence,
   V2PluginContext,
   TypeSafeOptions,
 };

@@ -1,4 +1,8 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import {
   ADVISOR_TRIGGERS,
   CHECKPOINT_INSTRUCTION,
@@ -28,6 +32,7 @@ import {
   withTimeout,
 } from "./ocAdvisor";
 import type { AdvisorConfig, V2PluginContext } from "./ocAdvisor";
+import type { AdvisorProfile, RequesterProfile } from "./modelProfiles";
 
 describe("isFableModel", () => {
   test("detects anthropic fable models", () => {
@@ -590,6 +595,137 @@ describe("tool registration", () => {
     expect(added[0].options).toEqual({ codemode: false });
     expect(typeof added[0].execute).toBe("function");
   });
+
+  test("forwards tool call identifiers to requester resolution", async () => {
+    resetAdvisorSessionCache();
+    const dir = mkdtempSync(join(tmpdir(), "ocadvisor-executor-"));
+    try {
+      const dbPath = join(dir, "fixture.db");
+      const setup = new Database(dbPath);
+      setup.run(
+        "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, title TEXT, model TEXT, agent TEXT, directory TEXT)",
+      );
+      setup.run(
+        "CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, seq INTEGER, data TEXT)",
+      );
+      setup
+        .query(
+          "INSERT INTO session_v2 (id, parent_id, title, model, agent, directory) VALUES (?,?,?,?,?,?)",
+        )
+        .run(
+          "ses_exec",
+          null,
+          "Executor",
+          JSON.stringify({ providerID: "meta", id: "muse-spark-1.3" }),
+          "build",
+          dir,
+        );
+      setup
+        .query(
+          "INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?,?,?,?,?)",
+        )
+        .run(
+          "msg_user",
+          "ses_exec",
+          "user",
+          1,
+          JSON.stringify({ text: "Do it" }),
+        );
+      setup
+        .query(
+          "INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?,?,?,?,?)",
+        )
+        .run(
+          "msg_exec",
+          "ses_exec",
+          "assistant",
+          2,
+          JSON.stringify({
+            agent: "build",
+            model: {
+              providerID: "openai",
+              id: "gpt-6-astra",
+              variant: "xhigh",
+            },
+            content: [
+              {
+                type: "tool",
+                id: "call_exec",
+                name: "advisor",
+                state: { status: "running", input: {} },
+              },
+            ],
+          }),
+        );
+      setup.close();
+
+      const seen: Array<{
+        requester: RequesterProfile;
+        advisor: AdvisorProfile;
+      }> = [];
+      const added: Array<Record<string, unknown>> = [];
+      const ctx = {
+        tool: {
+          transform: async (
+            fn: (draft: { add: (tool: unknown) => void }) => void,
+          ) => {
+            fn({ add: (tool) => added.push(tool as Record<string, unknown>) });
+            return { dispose: () => {} };
+          },
+        },
+        session: {
+          create: async () => ({ id: "ses_adv_exec" }),
+          switchModel: async () => {},
+          generate: async () => ({ text: "executor advice" }),
+        },
+        __advisorTest: {
+          dbPath,
+          metricsPath: join(dir, "metrics.jsonl"),
+          gateClient: {
+            systemOne: async () => ({
+              kind: "response",
+              result: {
+                model: "jev-1.13.0",
+                answers: { needed: { noul: 0.05 } },
+                usage: {},
+              },
+            }),
+          },
+          profileSink: (profiles: {
+            requester: RequesterProfile;
+            advisor: AdvisorProfile;
+          }) => {
+            seen.push(profiles);
+          },
+        },
+      } as unknown as V2PluginContext;
+      await setupOcAdvisorV2(ctx);
+      const execute = added[0]?.execute as (
+        input: Record<string, unknown>,
+        context: Record<string, unknown>,
+      ) => Promise<{ content: string }>;
+      const result = await execute(
+        { mode: "general", question: "Executor check" },
+        {
+          sessionID: "ses_exec",
+          messageID: "msg_exec",
+          id: "call_exec",
+          agent: "build",
+        },
+      );
+
+      expect(typeof result.content).toBe("string");
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.requester).toEqual({
+        providerID: "openai",
+        modelID: "gpt-6-astra",
+        variant: "xhigh",
+        provenance: "invocation_message",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("context hook", () => {
@@ -1018,6 +1154,78 @@ describe("resolveAdvisorConfig", () => {
       resolveAdvisorConfig({ disabledForModels: ["openai/"] }, noEnv),
     ).toThrow(/exact provider\/model/);
   });
+
+  test("benchmarks defaults to fully default paths", () => {
+    expect(resolveAdvisorConfig(undefined, noEnv).benchmarks).toEqual({});
+    expect(resolveAdvisorConfig({}, noEnv).benchmarks).toEqual({});
+    expect(
+      resolveAdvisorConfig({ benchmarks: null }, noEnv).benchmarks,
+    ).toEqual({});
+  });
+
+  test("benchmarks accepts explicit snapshot and mapping paths", () => {
+    const config = resolveAdvisorConfig(
+      {
+        benchmarks: {
+          path: " /tmp/snap.json ",
+          mappingsPath: "/tmp/maps.json",
+        },
+      },
+      noEnv,
+    );
+    expect(config.benchmarks).toEqual({
+      path: "/tmp/snap.json",
+      mappingsPath: "/tmp/maps.json",
+    });
+  });
+
+  test("benchmarks reads from the environment with options winning per field", () => {
+    const env = {
+      OCADVISOR_BENCHMARKS_PATH: "/tmp/env/snap.json",
+      OCADVISOR_BENCHMARK_MAPPINGS_PATH: "/tmp/env/maps.json",
+    };
+    expect(resolveAdvisorConfig(undefined, env).benchmarks).toEqual({
+      path: "/tmp/env/snap.json",
+      mappingsPath: "/tmp/env/maps.json",
+    });
+    // A plugin option overrides one field while the other stays on env.
+    expect(
+      resolveAdvisorConfig({ benchmarks: { path: "/tmp/opt/snap.json" } }, env)
+        .benchmarks,
+    ).toEqual({
+      path: "/tmp/opt/snap.json",
+      mappingsPath: "/tmp/env/maps.json",
+    });
+  });
+
+  test("benchmarks drops blank entries and ignores unknown keys", () => {
+    expect(
+      resolveAdvisorConfig(
+        { benchmarks: { path: "  ", mappingsPath: null, extra: true } },
+        noEnv,
+      ).benchmarks,
+    ).toEqual({});
+  });
+
+  test("benchmarks rejects non-object and non-absolute values", () => {
+    expect(() =>
+      resolveAdvisorConfig({ benchmarks: "/tmp/snap.json" }, noEnv),
+    ).toThrow(/benchmarks must be an object/);
+    expect(() =>
+      resolveAdvisorConfig({ benchmarks: { path: 42 } }, noEnv),
+    ).toThrow(/benchmarks\.path must be an absolute path/);
+    expect(() =>
+      resolveAdvisorConfig(
+        { benchmarks: { mappingsPath: "relative/maps.json" } },
+        noEnv,
+      ),
+    ).toThrow(/benchmarks\.mappingsPath must be an absolute path/);
+    expect(() =>
+      resolveAdvisorConfig(undefined, {
+        OCADVISOR_BENCHMARKS_PATH: "relative/snap.json",
+      }),
+    ).toThrow(/benchmarks\.path must be an absolute path/);
+  });
 });
 
 describe("advisorDisabledReason", () => {
@@ -1198,6 +1406,7 @@ describe("model helpers honor a custom config", () => {
     maxTranscriptChars: 0,
     agentEffort: null,
     disabledForModels: [],
+    benchmarks: {},
     typesafeSource: { disabled: false, overrides: {} },
     typesafe: { enabled: false, settings: null, keyPresent: false },
     typesafeSettings: null,

@@ -42,7 +42,9 @@ and the usage report accept both `advisor` and the pre-rename `ocAdvisor`.
 
 The advisor model and limits are configurable. Defaults:
 `anthropic/claude-fable-5-1#xhigh`, a 300 s generation timeout, no
-transcript cap, and TypeSafe screening on when a key is present.
+transcript cap, TypeSafe screening on when a key is present, and
+model-capability evidence from a local Artificial Analysis snapshot when
+one is available.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -54,6 +56,8 @@ transcript cap, and TypeSafe screening on when a key is present.
 | `agentEffort` | `false` | Let the agent pick effort per call: `true` allows `high`, `xhigh`, `max`; an array or comma string sets an explicit allow-list |
 | `disabledForModels` | `[]` | Exact caller `provider/model` IDs that must not see or invoke advisor. Applies to every effort variant of that ID. A string array is the documented form; a comma-separated string is also accepted |
 | `typesafe` | enabled with a key | `false` disables screening; `true` or an object enables it (see below) |
+| `benchmarks.path` | data-directory snapshot | Absolute path to the local Artificial Analysis snapshot file |
+| `benchmarks.mappingsPath` | beside the snapshot | Absolute path to the local model-mapping overrides file |
 
 Set them as plugin options in `opencode.json`. Because a plugin loaded from
 the auto-discovered `plugin/` directory cannot receive options, list it
@@ -131,7 +135,8 @@ lower precedence than plugin options: `OCADVISOR_MODEL` (accepts
 `provider/model#variant`), `OCADVISOR_PROVIDER`, `OCADVISOR_VARIANT`,
 `OCADVISOR_TIMEOUT_MS`, `OCADVISOR_MAX_TRANSCRIPT_CHARS`,
 `OCADVISOR_AGENT_EFFORT` (`true`, `false`, or a comma-separated allow-list),
-`OCADVISOR_DISABLED_FOR_MODELS` (comma-separated exact `provider/model` IDs).
+`OCADVISOR_DISABLED_FOR_MODELS` (comma-separated exact `provider/model` IDs),
+`OCADVISOR_BENCHMARKS_PATH`, and `OCADVISOR_BENCHMARK_MAPPINGS_PATH`.
 
 The "already the advisor model" skip is still keyed to Fable
 (`anthropic/claude-fable-*`); if you point the advisor at a different model,
@@ -174,7 +179,10 @@ Rules enforced by the tool description and an injected session instruction:
   argument selects the reasoning effort for that consultation.
 - When TypeSafe screening is active, a clearly unnecessary consultation
   returns a skip notice instead of advice, and an omitted effort may be
-  chosen automatically.
+  chosen automatically. When model-capability evidence is available, it is
+  weighed as context, not as a rule: a strong requester can still benefit
+  from independent review and a weak requester still needs no advice for
+  trivial work.
 
 ## TypeSafe screening (optional)
 
@@ -236,6 +244,135 @@ Behavior notes:
 - Gate metrics (decision, need probability, selected effort, latency, tokens)
   are recorded alongside the consultation in `ocAdvisor-metrics.jsonl`.
 
+## Model-capability benchmarks (Artificial Analysis)
+
+The gate judges how much an independent advisor could help *this* requesting
+model. To do that it needs two things: the actual model that made the call —
+including its reasoning effort — and measured capability data for both that
+model and the advisor. The plugin reads a local snapshot of
+[Artificial Analysis](https://artificialanalysis.ai/) results; ordinary
+consultations never touch the network for benchmark data.
+
+What the gate receives, in the same single TypeSafe request:
+
+- `models.requester` — `provider`, `model`, effort variant, and where the
+  identity came from (`invocation_message`, `latest_message`,
+  `session_fallback`, or `unknown`). The requester is the model behind the
+  outgoing tool call, not the parent session or whatever the session row
+  points at after a later switch.
+- `models.advisor` — `provider`, `model`, and the effort policy in force:
+  a pinned caller effort, gate-selectable candidates with their fallback, or
+  a fixed default.
+- `benchmarks` — the snapshot source and age, one match per profile, and
+  comparisons for the shared metrics: Artificial Analysis Coding Index,
+  Intelligence Index, and up to two reasoning/math results (HLE, GPQA, Math
+  Index) when present. Code computes oriented differences
+  (`advisor_minus_requester`); the model never does arithmetic. Scores that
+  cannot be strictly compared carry an explicit `reason` (`effort_mismatch`,
+  `effort_unknown`, `missing_requester`, …) and no delta.
+
+Policy rule baked into the gate instructions: scores estimate comparative
+capability, not certainty about the task. A strong requester can still benefit
+from independent review or a fresh perspective when stuck, and a weaker
+requester still needs no advice for trivial work. Unknown, mismatched, or
+stale data is uncertainty — never evidence against consultation. No
+automatic skip is ever derived from scores alone.
+
+### Refreshing data between releases
+
+The data lives in a local file the plugin reads at consultation time:
+
+```text
+$XDG_DATA_HOME/opencode/ocadvisor/artificial-analysis.json   # or ~/.local/share/...
+```
+
+The `ocadvisor` CLI refreshes it independently of plugin releases:
+
+```sh
+# Installed (npm bin):
+ARTIFICIAL_ANALYSIS_API_KEY=... ocadvisor benchmarks update
+
+# One-shot without a global install:
+ARTIFICIAL_ANALYSIS_API_KEY=... bunx --package @pfoundation/ocadvisor ocadvisor benchmarks update
+
+# Custom locations (absolute paths):
+ocadvisor benchmarks update --path /srv/ocadvisor/artificial-analysis.json
+ocadvisor benchmarks status --path /srv/ocadvisor/artificial-analysis.json --model openai/gpt-6-astra#xhigh
+```
+
+- `benchmarks update` fetches the official models endpoint once, validates it,
+  and atomically replaces the snapshot. The old file is preserved byte-for-byte
+  if fetch, validation, or write fails; concurrent updaters coordinate through
+  a per-target lock. It prints the path, fetch time, model count, metric
+  coverage, and content hash.
+- `benchmarks status` is fully offline. It reports the active source
+  (user file, bundled baseline, or unavailable), schema version, age, model
+  count, metric coverage, mapping counts, and — with `--model` — the exact
+  match or the reason a model is unresolved. Status describes what is on
+  disk; a running plugin keeps serving its last good in-memory copy until a
+  valid replacement is observed.
+- Exit codes: `0` success; `1` update failed, no usable snapshot, or model
+  unresolved; `2` usage error.
+- The plugin picks up a refreshed snapshot on the next consultation without a
+  restart. A consultation already in flight keeps the snapshot it started
+  with, so both models are always resolved against one consistent dataset.
+
+The API key is read from the environment, trimmed, sent only as the
+`x-api-key` header, and never stored or logged. The free Artificial Analysis
+API is rate-limited, so refresh manually (for example between releases)
+rather than in a loop. Benchmark data is provided by Artificial Analysis
+(https://artificialanalysis.ai/).
+
+A validated snapshot from the package release date ships inside the package
+as the bundled baseline, so a fresh install has real coverage before the
+first refresh. Regenerate the shipped data with
+`ARTIFICIAL_ANALYSIS_API_KEY=... bun scripts/buildBenchmarkData.ts
+--refresh-snapshot` (mappings only without the flag; the docs recommend
+refreshing the user snapshot instead of rerunning this).
+
+### Model mappings
+
+Published model IDs do not always line up with serving providers (gateways
+add prefixes) or with the effort used in an evaluation. The plugin resolves
+matches only through explicit bindings to stable Artificial Analysis IDs —
+never fuzzy names, prefix stripping, or sibling substitution:
+
+- `src/data/artificialAnalysis.mappings.json` ships baseline bindings
+  (curated in `scripts/buildBenchmarkData.ts`, every entry pointing at a
+  stable Artificial Analysis ID with its published evaluated effort).
+- `model-mappings.json` beside the snapshot holds user overrides; these
+  survive refreshes and plugin upgrades.
+- Binding keys are exact `(providerID, modelID, variant)` tuples. A null
+  variant covers unset variants only — it is never a wildcard. Variants are
+  independent: a `high` binding does not match an `xhigh` call.
+- Local bindings override bundled ones per tuple and can cover a newly
+  released model with no plugin release:
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "bindings": [
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-astra",
+      "variant": "xhigh",
+      "aaModelID": "the-stable-artificial-analysis-uuid",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-astra"
+    }
+  ]
+}
+```
+
+Set `evaluatedEffort` to the effort the evaluation actually ran at when the
+source documents it, or `null` when it is unreported. Bindings with a null
+evaluated effort still show scores but are labeled `effort_unknown`, and
+their deltas are withheld from strict comparison. Use `benchmarks status
+--model` to check exactly how a model resolves.
+
+Unknown or unmapped models are not an error: consultations proceed with no
+benchmark evidence for them, and the gate treats the gap as uncertainty.
+
 ## How it works
 
 - `src/index.ts` → `dist/index.js` is the published entrypoint (default
@@ -245,7 +382,11 @@ Behavior notes:
   `advisor` tool, injects a short selective-use instruction into eligible
   sessions via the `context` hook, and builds the transcript from the OpenCode
   SQLite database. `src/typesafeGate.ts` and `src/typesafeState.ts` hold the
-  optional TypeSafe preflight.
+  optional TypeSafe preflight. `src/benchmarkTypes.ts`, `src/artificialAnalysis.ts`,
+  `src/benchmarkUpdate.ts`, `src/benchmarkStore.ts`, `src/benchmarkMatch.ts`,
+  and `src/benchmarkEvidence.ts` hold the local Artificial Analysis snapshot,
+  its refresh transaction, the hot-reloading reader, and exact model mapping;
+  `src/cli.ts` exposes the maintenance commands.
 - The tool is registered as a direct tool (`options.codemode: false`).
   OpenCode 2 otherwise exposes plugin tools only through the `execute` Code
   Mode tool, whose tool log records each nested call's input but hides the
@@ -257,9 +398,16 @@ Behavior notes:
   callers), never add one, and the selective-use instruction is injected
   only when the tool is available to the request.
 - Before each consultation it checks OpenCode for support of the configured
-  advisor model: the provider is enabled (`catalog.provider.get`), the model
-  is available (`catalog.model.list`, configured variant when listed), and a
-  connection exists (`integration.connection.active`).
+  advisor model: the provider is enabled (`provider.get`), the model is
+  available (`model.list`, configured variant when listed), and a connection
+  exists (`integration.connection.active`). The older `catalog.*` discovery
+  namespace remains as a compatibility fallback.
+- Benchmark snapshots and mapping overrides are read through one cached
+  store per process. Before each gate-enabled consultation the store
+  re-stats both files and reloads only when their identity changed, so CLI
+  refreshes land on the next call without a restart; invalid replacements
+  keep the last good data and unmatched scenarios report explicit coverage
+  instead of guessing.
 - Consultations run as transient generations on a dedicated, reusable
   `advisor` session pinned to the configured model (default
   `anthropic/claude-fable-5-1#xhigh`) via `session.create` +
@@ -302,6 +450,13 @@ When the tool is hidden for the request, there is no invocation and no
 metrics row. A direct call that still reaches the executor for an excluded
 caller records one `skipped_model` line and no TypeSafe gate field.
 
+Gate-enabled calls also carry a compact `benchmarks` object: snapshot source
+(`user`/`seed`/`unavailable`), content hash, fetch time, hash-verified flag,
+requester identity plus match status, advisor effort policy, the default
+match, and — once generation runs — the final effort and its match. Rows
+from before this feature simply lack the field; the report treats it as
+optional and summarizes benchmark coverage when present.
+
 ## Activation
 
 The server loads plugin files once per process, so after installing or
@@ -333,9 +488,10 @@ directories, so changes to this checkout need an explicit service restart.
 bun install           # install dependencies (frozen lockfile in CI)
 bun test              # unit tests
 bun run typecheck     # typecheck (tsc --noEmit)
-bun run build         # compile dist/ (runs automatically on npm pack/publish)
+bun run build         # compile dist/ + copy benchmark data (runs on npm pack/publish)
 bun run report        # advisor usage over the last 30 days
 bun src/usageReport.ts --days 7
+bun src/cli.ts benchmarks status          # the shipped CLI, from source
 ```
 
 ## Evaluation
@@ -358,16 +514,38 @@ shipped in the npm package.
 `bun src/typesafeGate.eval.ts [--model jev-1.13.0]` runs labeled cases from
 `src/fixtures/typesafeGate.cases.json` against the gate and prints per-case
 decisions plus false-skip, unnecessary-proceed, fallback, latency, token, and
-cost figures. It requires `TYPESAFE_API_KEY` in the process environment and
-calls TypeSafe only — never the advisor model. Neither the script nor its
-fixtures are published.
+cost figures. Cases may carry synthetic benchmark profiles (fake model IDs
+and scores) that exercise the full evidence wire format without touching real
+snapshot files; the fixture file says so explicitly. It requires
+`TYPESAFE_API_KEY` in the process environment and calls TypeSafe only — never
+the advisor model. Neither the script nor its fixtures are published.
 
 Initial run (2026-09-19, `jev-1.13.0`, six cases, 4,240 input tokens,
 ≈$0.00018): no false skips on must-consult cases, no fallbacks, latency
-p50/p95 266/626 ms. One routine question scored exactly at the default
-`skipBelow` (0.20) and proceeded; the threshold is deliberately conservative
-so uncertainty preserves consultation. Adjust `skipBelow` only from observed
-cases and re-run the evaluation after changing it.
+p50/p95 266/626 ms.
+
+Benchmark-aware run (same model and day, ten cases including four synthetic
+benchmark profiles — stronger requester, weaker requester, unknown scores,
+stale snapshot — 11,164 input tokens, ≈$0.00047): **0 false skips** on
+must-consult cases, including the stronger-requester review and the
+unknown-scores debug; the stale-snapshot review proceeded as well. Two
+unnecessary proceeds on routine questions landed at need 0.23–0.33, above the
+conservative default `skipBelow` (0.20): uncertainty preserves consultation
+by design. No fallbacks; latency p50/p95 280/607 ms. Adjust the threshold
+only from observed cases and re-run the evaluation after changing it.
+
+### End-to-end benchmark data flow
+
+1. Fresh install: the plugin reads the bundled snapshot shipped with the
+   package, so real coverage exists before any refresh. User files, when
+   present, take precedence over it.
+2. An operator with an Artificial Analysis key runs
+   `ocadvisor benchmarks update`. The validated snapshot lands in the data
+   directory and the next consultation logs its content hash.
+3. `ocadvisor benchmarks status --model ...` confirms which models now
+   resolve, and local `model-mappings.json` entries cover anything missing.
+4. A later plugin upgrade leaves the user snapshot and mappings untouched —
+   they live outside the package — so coverage persists across releases.
 
 ## Versioning
 
