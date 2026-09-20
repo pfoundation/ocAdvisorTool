@@ -71,6 +71,7 @@ export interface BenchmarkStoreOptions {
   seedMappingsPath?: string;
   fs?: BenchmarkFileSystem;
   maxBytes?: number;
+  matchAnyProvider?: boolean;
 }
 
 export interface BenchmarkStore {
@@ -397,6 +398,7 @@ export async function createBenchmarkStore(
           snapshot,
           bundled: seedMappings.value,
           local: mappingsLeg.value,
+          matchAnyProvider: options.matchAnyProvider ?? false,
         }),
       };
     },

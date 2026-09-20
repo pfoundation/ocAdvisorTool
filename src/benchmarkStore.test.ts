@@ -386,6 +386,35 @@ describe("benchmark store caching and reloads", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("passes the cross-provider option through to matching", async () => {
+    const files = storeFiles();
+    writeFileSync(
+      files.snapshotPath,
+      snapshotJson([syntheticRecord(SNAP_A, 60)]),
+    );
+    writeFileSync(
+      files.seedMappingsPath,
+      mappingsJson([binding("model-a", SNAP_A)]),
+    );
+    const strict = await createTestStore(files);
+    expect(
+      (await strict.view()).matcher.match({
+        providerID: "other-provider",
+        modelID: "model-a",
+        variant: "high",
+      }).status,
+    ).toBe("unmapped");
+
+    const relaxed = await createTestStore(files, { matchAnyProvider: true });
+    const routed = (await relaxed.view()).matcher.match({
+      providerID: "other-provider",
+      modelID: "model-a",
+      variant: "high",
+    });
+    expect(routed.status).toBe("matched");
+    expect(routed.aaModelID).toBe(SNAP_A);
+  });
 });
 
 describe("benchmark store fallback and recovery", () => {

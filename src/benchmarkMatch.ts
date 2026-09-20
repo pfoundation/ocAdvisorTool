@@ -110,6 +110,14 @@ function bindingKey(parts: {
   return JSON.stringify([parts.providerID, parts.modelID, parts.variant]);
 }
 
+function modelVariantKey(parts: {
+  providerID: string;
+  modelID: string;
+  variant: string | null;
+}): string {
+  return JSON.stringify([parts.modelID, parts.variant]);
+}
+
 export function parseModelMappings(
   value: unknown,
 ): ModelMappings | BenchmarkValidationError {
@@ -263,6 +271,11 @@ export function createBenchmarkMatcher(input: {
   snapshot: BenchmarkSnapshot | null;
   bundled: ModelMappings;
   local: ModelMappings | null;
+  // Opt-in cross-provider fallback: when no exact provider binding exists,
+  // resolve the same model id and variant on another provider route (for
+  // example `opencode/…` serving a model whose binding uses the official
+  // provider). Off by default: matching stays provider-strict.
+  matchAnyProvider?: boolean;
 }): BenchmarkMatcher {
   const merged = new Map<string, MergedBinding>();
   for (const binding of input.bundled.bindings) {
@@ -271,19 +284,42 @@ export function createBenchmarkMatcher(input: {
   for (const binding of input.local?.bindings ?? []) {
     merged.set(bindingKey(binding), { binding, source: "local" });
   }
+  // Secondary index keyed by model id + variant. Merged insertion order is
+  // bundled then local, so a local binding already replaces the bundled one
+  // for the same tuple; across providers the local entry still wins when
+  // walked in this order.
+  const byModel = new Map<string, MergedBinding>();
+  for (const entry of merged.values()) {
+    const key = modelVariantKey(entry.binding);
+    const current = byModel.get(key);
+    if (!current || (current.source === "bundled" && entry.source === "local")) {
+      byModel.set(key, entry);
+    }
+  }
   const records = new Map<string, BenchmarkModel>();
   for (const model of input.snapshot?.models ?? []) {
     records.set(model.id, model);
   }
 
   const match = (ref: ModelRef): BenchmarkMatch => {
-    const found = merged.get(
+    const exact = merged.get(
       bindingKey({
         providerID: ref.providerID,
         modelID: ref.modelID,
         variant: ref.variant ?? null,
       }),
     );
+    const found =
+      exact ??
+      (input.matchAnyProvider
+        ? byModel.get(
+            modelVariantKey({
+              providerID: ref.providerID,
+              modelID: ref.modelID,
+              variant: ref.variant ?? null,
+            }),
+          )
+        : undefined);
     if (!found) {
       return {
         status: "unmapped",

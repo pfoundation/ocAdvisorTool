@@ -8,12 +8,16 @@ import type { BenchmarkValidationError } from "./benchmarkTypes.js";
 
 export const BENCHMARKS_PATH_ENV = "OCADVISOR_BENCHMARKS_PATH";
 export const BENCHMARK_MAPPINGS_PATH_ENV = "OCADVISOR_BENCHMARK_MAPPINGS_PATH";
+export const BENCHMARK_MATCH_ANY_PROVIDER_ENV =
+  "OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER";
 export const DEFAULT_SNAPSHOT_FILENAME = "artificial-analysis.json";
 export const DEFAULT_MAPPINGS_FILENAME = "model-mappings.json";
 
 export interface BenchmarkPathOptions {
   path?: string;
   mappingsPath?: string;
+  // Opt-in cross-provider fallback for model matching. Off by default.
+  matchAnyProvider?: boolean;
 }
 
 export interface ResolvedBenchmarkPaths {

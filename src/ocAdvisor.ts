@@ -65,7 +65,7 @@ const FABLE_DISABLED =
 // via environment variables (OCADVISOR_MODEL, OCADVISOR_PROVIDER,
 // OCADVISOR_VARIANT, OCADVISOR_TIMEOUT_MS, OCADVISOR_MAX_TRANSCRIPT_CHARS,
 // OCADVISOR_AGENT_EFFORT, OCADVISOR_BENCHMARKS_PATH,
-// OCADVISOR_BENCHMARK_MAPPINGS_PATH).
+// OCADVISOR_BENCHMARK_MAPPINGS_PATH, OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER).
 // Defaults preserve the original behavior: anthropic/claude-fable-5-1#xhigh.
 interface AdvisorConfig {
   provider: string;
@@ -193,10 +193,20 @@ function normalizeDisabledForModels(value: unknown): string[] | undefined {
   return [...new Set(refs)];
 }
 
-// `{ path, mappingsPath }` with absolute locations. `undefined`/`null`
-// means "not set"; blank entries are dropped; unknown keys are ignored.
-// Invalid explicit values throw so misconfiguration fails fast at setup
-// instead of silently degrading to default benchmark data.
+// `{ path, mappingsPath, matchAnyProvider }`. `undefined`/`null` means
+// "not set"; blank entries are dropped; unknown keys are ignored. Invalid
+// explicit values throw so misconfiguration fails fast at setup instead of
+// silently degrading to default benchmark data.
+function parseBooleanOption(name: string, value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const lowered = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(lowered)) return true;
+    if (["false", "0", "no", "off", ""].includes(lowered)) return false;
+  }
+  throw new Error(`benchmarks.${name} must be true or false.`);
+}
+
 function normalizeBenchmarks(value: unknown): BenchmarkPathOptions | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "object" || Array.isArray(value)) {
@@ -216,6 +226,12 @@ function normalizeBenchmarks(value: unknown): BenchmarkPathOptions | undefined {
       throw new Error(`benchmarks.${key} must be an absolute path.`);
     }
     out[key] = trimmed;
+  }
+  if (raw.matchAnyProvider !== undefined && raw.matchAnyProvider !== null) {
+    out.matchAnyProvider = parseBooleanOption(
+      "matchAnyProvider",
+      raw.matchAnyProvider,
+    );
   }
   return out;
 }
@@ -327,11 +343,18 @@ function envAdvisorConfigSource(
     disabledForModels: env.OCADVISOR_DISABLED_FOR_MODELS,
     benchmarks:
       env.OCADVISOR_BENCHMARKS_PATH === undefined &&
-      env.OCADVISOR_BENCHMARK_MAPPINGS_PATH === undefined
+      env.OCADVISOR_BENCHMARK_MAPPINGS_PATH === undefined &&
+      env.OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER === undefined
         ? undefined
         : {
             path: env.OCADVISOR_BENCHMARKS_PATH,
             mappingsPath: env.OCADVISOR_BENCHMARK_MAPPINGS_PATH,
+            ...(env.OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER !== undefined
+              ? {
+                  matchAnyProvider:
+                    env.OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER,
+                }
+              : {}),
           },
   };
 }
@@ -352,7 +375,15 @@ function resolveAdvisorConfig(
     options as AdvisorConfigSource,
     env,
   );
-  return config;
+  // Resolved view always states the matching policy, so downstream code
+  // never has to invent the documented default.
+  return {
+    ...config,
+    benchmarks: {
+      ...config.benchmarks,
+      matchAnyProvider: config.benchmarks.matchAnyProvider ?? false,
+    },
+  };
 }
 
 const SYSTEM_BASE = `You are a senior advisor reviewing a coding agent's work. You have the full session transcript.
@@ -1869,12 +1900,14 @@ function resetBenchmarkStores(): void {
 function benchmarkStoreKey(
   snapshotPath: string,
   mappingsPath: string,
+  matchAnyProvider: boolean,
   seedSnapshotPath?: string,
   seedMappingsPath?: string,
 ): string {
   return [
     snapshotPath,
     mappingsPath,
+    matchAnyProvider ? "any-provider" : "strict-provider",
     seedSnapshotPath ?? "",
     seedMappingsPath ?? "",
   ].join("\n");
@@ -1904,6 +1937,7 @@ async function loadBenchmarkEvidence(
     const key = benchmarkStoreKey(
       paths.snapshotPath,
       paths.mappingsPath,
+      config.benchmarks.matchAnyProvider ?? false,
       testOpts?.seedSnapshotPath,
       testOpts?.seedMappingsPath,
     );
@@ -1916,6 +1950,7 @@ async function loadBenchmarkEvidence(
         seedMappingsPath: testOpts?.seedMappingsPath,
         fs: testOpts?.fs,
         maxBytes: testOpts?.maxBytes,
+        matchAnyProvider: config.benchmarks.matchAnyProvider ?? false,
       });
       benchmarkStores.set(key, store);
     }

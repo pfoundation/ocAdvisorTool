@@ -58,6 +58,7 @@ one is available.
 | `typesafe` | enabled with a key | `false` disables screening; `true` or an object enables it (see below) |
 | `benchmarks.path` | data-directory snapshot | Absolute path to the local Artificial Analysis snapshot file |
 | `benchmarks.mappingsPath` | beside the snapshot | Absolute path to the local model-mapping overrides file |
+| `benchmarks.matchAnyProvider` | `false` | Resolve a model on another provider route when no exact provider binding exists (see below) |
 
 Set them as plugin options in `opencode.json`. Because a plugin loaded from
 the auto-discovered `plugin/` directory cannot receive options, list it
@@ -136,7 +137,8 @@ lower precedence than plugin options: `OCADVISOR_MODEL` (accepts
 `OCADVISOR_TIMEOUT_MS`, `OCADVISOR_MAX_TRANSCRIPT_CHARS`,
 `OCADVISOR_AGENT_EFFORT` (`true`, `false`, or a comma-separated allow-list),
 `OCADVISOR_DISABLED_FOR_MODELS` (comma-separated exact `provider/model` IDs),
-`OCADVISOR_BENCHMARKS_PATH`, and `OCADVISOR_BENCHMARK_MAPPINGS_PATH`.
+`OCADVISOR_BENCHMARKS_PATH`, `OCADVISOR_BENCHMARK_MAPPINGS_PATH`, and
+`OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER` (`true`/`false`).
 
 The "already the advisor model" skip is still keyed to Fable
 (`anthropic/claude-fable-*`); if you point the advisor at a different model,
@@ -372,6 +374,41 @@ their deltas are withheld from strict comparison. Use `benchmarks status
 
 Unknown or unmapped models are not an error: consultations proceed with no
 benchmark evidence for them, and the gate treats the gap as uncertainty.
+
+### Matching across provider routes
+
+Bindings are provider-exact by default, which is the safest behavior: the
+same model can differ by serving route. When the same model is served
+through several routes (an aggregator, a gateway, or the host's own
+provider namespace), enable the cross-provider fallback instead of
+maintaining a binding per route:
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "@pfoundation/ocadvisor",
+      "options": {
+        "benchmarks": { "matchAnyProvider": true }
+      }
+    }
+  ]
+}
+```
+
+With it on, a request for `opencode/deepseek-v4.1-flash#max` resolves through
+the official `deepseek/deepseek-v4.1-flash#max` binding: exact provider
+bindings still win first, variants stay independent (`high` never borrows
+`max`), and the stable AA ID plus its published evaluated effort are
+preserved. If several providers define the same model and variant, local
+bindings win over bundled ones. Check the outcome before relying on it:
+
+```sh
+ocadvisor benchmarks status --match-any-provider true --model opencode/deepseek-v4.1-flash#max
+```
+
+The equivalent environment variable is
+`OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER=true`.
 
 ## How it works
 

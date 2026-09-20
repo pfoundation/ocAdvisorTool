@@ -350,6 +350,91 @@ describe("benchmark matching", () => {
     expect(added.record?.id).toBe(AA_A);
   });
 
+  test("matches the same model on another provider when allowed", () => {
+    const matcher = createBenchmarkMatcher({
+      snapshot: syntheticSnapshot(),
+      bundled: bundledMappings(),
+      local: null,
+      matchAnyProvider: true,
+    });
+    // The bundle binds test-provider/model-a#high; the same model served via
+    // another route resolves through the by-model fallback.
+    const routed = matcher.match({
+      providerID: "opencode",
+      modelID: "model-a",
+      variant: "high",
+    });
+    expect(routed.status).toBe("matched");
+    expect(routed.source).toBe("bundled");
+    expect(routed.aaModelID).toBe(AA_A);
+
+    // Exact provider bindings still win over the fallback.
+    const exact = matcher.match({
+      providerID: "test-provider",
+      modelID: "model-a",
+      variant: "high",
+    });
+    expect(exact.aaModelID).toBe(AA_A);
+  });
+
+  test("keeps variants independent when matching across providers", () => {
+    const matcher = createBenchmarkMatcher({
+      snapshot: syntheticSnapshot(),
+      bundled: bundledMappings(),
+      local: null,
+      matchAnyProvider: true,
+    });
+    // model-a is bound only for "high"; another provider at "max" stays
+    // unmapped rather than borrowing the wrong effort's scores.
+    expect(
+      matcher.match({
+        providerID: "opencode",
+        modelID: "model-a",
+        variant: "max",
+      }).status,
+    ).toBe("unmapped");
+    // Nested gateway model IDs keep working through the fallback too.
+    expect(
+      matcher.match({
+        providerID: "opencode-go",
+        modelID: "nested/model-b",
+        variant: null,
+      }).status,
+    ).toBe("effort_unknown");
+  });
+
+  test("applies the cross-provider fallback to local bindings too", () => {
+    const matcher = createBenchmarkMatcher({
+      snapshot: syntheticSnapshot(),
+      bundled: { schemaVersion: 1, bindings: [] },
+      local: localMappings(),
+      matchAnyProvider: true,
+    });
+    const routed = matcher.match({
+      providerID: "opencode",
+      modelID: "model-c",
+      variant: "max",
+    });
+    expect(routed.status).toBe("matched");
+    expect(routed.source).toBe("local");
+    expect(routed.aaModelID).toBe(AA_A);
+  });
+
+  test("stays provider-strict by default", () => {
+    const matcher = createBenchmarkMatcher({
+      snapshot: syntheticSnapshot(),
+      bundled: bundledMappings(),
+      local: null,
+    });
+    expect(
+      matcher.match({
+        providerID: "opencode",
+        modelID: "model-a",
+        variant: "high",
+      }).status,
+    ).toBe("unmapped");
+  });
+
   test("reports bindings that point at missing snapshot records", () => {
     const matcher = createBenchmarkMatcher({
       snapshot: syntheticSnapshot(),
