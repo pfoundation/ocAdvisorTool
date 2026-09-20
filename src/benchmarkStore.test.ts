@@ -189,10 +189,12 @@ describe("benchmark store precedence", () => {
       mappingsPath: join(dir, "model-mappings.json"),
     });
     const view = await store.view();
-    // The bundled mappings file ships (empty until verified); the genuine
-    // seed snapshot is still blocked on API access (see T11.2).
-    expect(Array.isArray(view.bundledMappings.bindings)).toBe(true);
-    expect(view.snapshotSource).toBe("unavailable");
+    // The bundled mappings and genuine seed ship with the package; the
+    // store must resolve them relative to its own module.
+    expect(view.snapshotSource).toBe("seed");
+    expect(view.snapshotHashVerified).toBe(true);
+    expect(view.snapshot?.models.length).toBeGreaterThan(100);
+    expect(view.bundledMappings.bindings.length).toBeGreaterThan(0);
   });
 });
 

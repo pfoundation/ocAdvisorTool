@@ -279,6 +279,17 @@ describe("runCli benchmarks update", () => {
 });
 
 describe("runCli benchmarks status", () => {
+  function seedlessArgs(...args: string[]): string[] {
+    const dir = tempDir();
+    return [
+      ...args,
+      "--seed-snapshot",
+      join(dir, "no-seed.json"),
+      "--seed-mappings",
+      join(dir, "no-seed-mappings.json"),
+    ];
+  }
+
   test("reports on-disk data without credentials or network", async () => {
     const dir = tempDir();
     const { path, contentHash } = writeSnapshot(dir);
@@ -287,11 +298,14 @@ describe("runCli benchmarks status", () => {
     const throwingFetch = (async (): Promise<never> => {
       throw new Error("status must stay offline");
     }) as unknown as typeof fetch;
-    const code = await runCli(["benchmarks", "status", "--path", path], {
-      ...captured.deps,
-      fetchImpl: throwingFetch,
-      nowMs: Date.parse("2026-09-19T12:00:00.000Z"),
-    });
+    const code = await runCli(
+      seedlessArgs("benchmarks", "status", "--path", path),
+      {
+        ...captured.deps,
+        fetchImpl: throwingFetch,
+        nowMs: Date.parse("2026-09-19T12:00:00.000Z"),
+      },
+    );
     expect(code).toBe(0);
     expect(captured.text()).toContain(`snapshot: user ${path}`);
     expect(captured.text()).toContain("models: 1");
@@ -302,11 +316,23 @@ describe("runCli benchmarks status", () => {
     expect(captured.text()).toContain("https://artificialanalysis.ai/");
   });
 
-  test("returns nonzero without a usable snapshot", async () => {
+  test("uses the bundled seed when the user file is missing", async () => {
     const dir = tempDir();
     const captured = capture();
     const code = await runCli(
       ["benchmarks", "status", "--path", join(dir, "missing.json")],
+      captured.deps,
+    );
+    expect(code).toBe(0);
+    expect(captured.text()).toContain("snapshot: bundled seed");
+    expect(captured.text()).toContain("mappings: 0 local, 24 bundled");
+  });
+
+  test("returns nonzero when neither user nor seed data is usable", async () => {
+    const dir = tempDir();
+    const captured = capture();
+    const code = await runCli(
+      seedlessArgs("benchmarks", "status", "--path", join(dir, "missing.json")),
       captured.deps,
     );
     expect(code).toBe(1);
@@ -321,14 +347,14 @@ describe("runCli benchmarks status", () => {
     const matched = capture();
     expect(
       await runCli(
-        [
+        seedlessArgs(
           "benchmarks",
           "status",
           "--path",
           path,
           "--model",
           "test-provider/requester-model#high",
-        ],
+        ),
         matched.deps,
       ),
     ).toBe(0);
@@ -339,14 +365,14 @@ describe("runCli benchmarks status", () => {
     const missing = capture();
     expect(
       await runCli(
-        [
+        seedlessArgs(
           "benchmarks",
           "status",
           "--path",
           path,
           "--model",
           "test-provider/other-model#high",
-        ],
+        ),
         missing.deps,
       ),
     ).toBe(1);
@@ -359,7 +385,14 @@ describe("runCli benchmarks status", () => {
     const captured = capture();
     expect(
       await runCli(
-        ["benchmarks", "status", "--path", path, "--model", "bare-model"],
+        seedlessArgs(
+          "benchmarks",
+          "status",
+          "--path",
+          path,
+          "--model",
+          "bare-model",
+        ),
         captured.deps,
       ),
     ).toBe(2);
@@ -372,7 +405,14 @@ describe("runCli benchmarks status", () => {
     const custom = writeMappings(dir, "custom-mappings.json", []);
     const captured = capture();
     const code = await runCli(
-      ["benchmarks", "status", "--path", path, "--mappings-path", custom],
+      seedlessArgs(
+        "benchmarks",
+        "status",
+        "--path",
+        path,
+        "--mappings-path",
+        custom,
+      ),
       captured.deps,
     );
     expect(code).toBe(0);

@@ -93,6 +93,10 @@ the active data and prints its match or why it is unmatched. Status
 describes on-disk candidates; a running plugin may still hold an older
 in-memory copy until its next consultation.
 
+Testing-only flags (not part of the documented surface):
+--seed-snapshot <file> and --seed-mappings <file> point the fallback
+seed elsewhere, which is useful for deterministic tests.
+
 Exit codes: 0 usable snapshot (and model resolved, when requested);
 1 no usable snapshot or model unresolved; 2 usage error.
 
@@ -298,7 +302,13 @@ async function benchmarksStatus(
   deps: ResolvedDeps,
   env: Record<string, string | undefined>,
 ): Promise<number> {
-  const parsed = parseFlags(args, ["--path", "--mappings-path", "--model"]);
+  const parsed = parseFlags(args, [
+    "--path",
+    "--mappings-path",
+    "--model",
+    "--seed-snapshot",
+    "--seed-mappings",
+  ]);
   if (!parsed.ok) {
     deps.err(`ocadvisor: ${parsed.message}\n${STATUS_HELP}`);
     return 2;
@@ -327,6 +337,10 @@ async function benchmarksStatus(
   const store = await createBenchmarkStore({
     snapshotPath: resolved.snapshotPath,
     mappingsPath: resolved.mappingsPath,
+    // Seed overrides exist for testing the fallback path; ordinary use
+    // reads the bundled data relative to this module.
+    seedSnapshotPath: parsed.values["seed-snapshot"],
+    seedMappingsPath: parsed.values["seed-mappings"],
   });
   const view = await store.view();
   const lines = ["benchmarks status (on-disk snapshot and mappings)"];

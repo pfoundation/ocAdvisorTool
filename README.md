@@ -323,6 +323,13 @@ API is rate-limited, so refresh manually (for example between releases)
 rather than in a loop. Benchmark data is provided by Artificial Analysis
 (https://artificialanalysis.ai/).
 
+A validated snapshot from the package release date ships inside the package
+as the bundled baseline, so a fresh install has real coverage before the
+first refresh. Regenerate the shipped data with
+`ARTIFICIAL_ANALYSIS_API_KEY=... bun scripts/buildBenchmarkData.ts
+--refresh-snapshot` (mappings only without the flag; the docs recommend
+refreshing the user snapshot instead of rerunning this).
+
 ### Model mappings
 
 Published model IDs do not always line up with serving providers (gateways
@@ -330,7 +337,9 @@ add prefixes) or with the effort used in an evaluation. The plugin resolves
 matches only through explicit bindings to stable Artificial Analysis IDs —
 never fuzzy names, prefix stripping, or sibling substitution:
 
-- `src/data/artificialAnalysis.mappings.json` ships baseline bindings.
+- `src/data/artificialAnalysis.mappings.json` ships baseline bindings
+  (curated in `scripts/buildBenchmarkData.ts`, every entry pointing at a
+  stable Artificial Analysis ID with its published evaluated effort).
 - `model-mappings.json` beside the snapshot holds user overrides; these
   survive refreshes and plugin upgrades.
 - Binding keys are exact `(providerID, modelID, variant)` tuples. A null
@@ -527,8 +536,9 @@ only from observed cases and re-run the evaluation after changing it.
 
 ### End-to-end benchmark data flow
 
-1. Fresh install: the plugin starts with no user snapshot and reports
-   `unavailable` benchmark coverage; consultations still run normally.
+1. Fresh install: the plugin reads the bundled snapshot shipped with the
+   package, so real coverage exists before any refresh. User files, when
+   present, take precedence over it.
 2. An operator with an Artificial Analysis key runs
    `ocadvisor benchmarks update`. The validated snapshot lands in the data
    directory and the next consultation logs its content hash.
