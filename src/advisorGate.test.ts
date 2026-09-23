@@ -751,10 +751,14 @@ describe("runAdvisor provider fallback", () => {
         question: "Fallback check",
         config: baseConfig(),
       }),
-    ).rejects.toThrow("Model unavailable: anthropic/claude-opus-5-5");
+    ).rejects.toThrow(
+      "Model unavailable: anthropic/claude-opus-5-5 (fallback opencode: Model unavailable: opencode/claude-opus-5-5)",
+    );
     expect(generated.length).toBe(0);
     expect(metricRecords()[0].outcome).toBe("error");
     expect(metricRecords()[0].errorType).toBe("model_unavailable");
+    // No route was chosen, so the row names none.
+    expect(metricRecords()[0].advisorProvider).toBeUndefined();
   });
 
   test("falls back on the V2 discovery path with effort selection on", async () => {
@@ -801,6 +805,106 @@ describe("runAdvisor provider fallback", () => {
       },
     });
     expect(metricRecords()[0].advisorProvider).toBe("opencode");
+  });
+
+  test("names the fallback route when generation fails after it", async () => {
+    const { client } = stubGate(gateResponse(0.9));
+    const { runtime, generated } = runtimeWith({
+      gateClient: client,
+      generate: async () => {
+        throw new Error("boom");
+      },
+    });
+    const catalog = runtime.catalog!;
+    catalog.provider!.get = async (args: { providerID?: string }) => {
+      if (args?.providerID === "anthropic")
+        throw new Error("provider disabled");
+      return { activation: "enabled" };
+    };
+    catalog.model!.list = async () => [
+      {
+        providerID: "opencode",
+        id: "claude-opus-5-5",
+        enabled: true,
+        variants: [{ id: "xhigh" }],
+      },
+    ];
+    await expect(
+      runAdvisor({
+        runtime,
+        sessionId: "ses_fixture",
+        mode: "general",
+        question: "Failure check",
+        config: baseConfig(),
+      }),
+    ).rejects.toThrow("advisor failed (api_error): boom");
+    expect(generated.length).toBe(1);
+    expect(metricRecords()[0].outcome).toBe("error");
+    expect(metricRecords()[0].advisorProvider).toBe("opencode");
+  });
+
+  test("re-pins the shared session when the primary recovers", async () => {
+    const { client } = stubGate(gateResponse(0.9));
+    const { runtime } = runtimeWith({ gateClient: client });
+    let anthropicDown = true;
+    const catalog = runtime.catalog!;
+    catalog.provider!.get = async (args: { providerID?: string }) => {
+      if (anthropicDown && args?.providerID === "anthropic") {
+        throw new Error("provider disabled");
+      }
+      return { activation: "enabled" };
+    };
+    const anthropicModel = {
+      providerID: "anthropic",
+      id: "claude-opus-5-5",
+      enabled: true,
+      variants: [{ id: "xhigh" }, { id: "max" }],
+    };
+    const opencodeModel = {
+      providerID: "opencode",
+      id: "claude-opus-5-5",
+      enabled: true,
+      variants: [{ id: "xhigh" }, { id: "max" }],
+    };
+    catalog.model!.list = async () =>
+      anthropicDown ? [opencodeModel] : [anthropicModel, opencodeModel];
+    let pinned = {
+      providerID: "anthropic",
+      id: "claude-opus-5-5",
+      variant: "xhigh",
+    };
+    const switches: Array<Record<string, unknown>> = [];
+    runtime.session!.get = async () => ({
+      id: "ses_advisor_fixture",
+      model: { ...pinned },
+    });
+    runtime.session!.switchModel = async (args: Record<string, unknown>) => {
+      switches.push(args);
+      pinned = { ...(args.model as typeof pinned) };
+    };
+    const config = baseConfig();
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "First",
+      config,
+    });
+    anthropicDown = false;
+    await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Second",
+      config,
+    });
+    expect(
+      switches.map((args) => (args.model as { providerID: string }).providerID),
+    ).toEqual(["opencode", "anthropic"]);
+    expect(metricRecords().map((row) => row.advisorProvider)).toEqual([
+      "opencode",
+      "anthropic",
+    ]);
   });
 });
 
