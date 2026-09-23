@@ -3,8 +3,8 @@
   "source": "artificial-analysis",
   "sourceURL": "https://artificialanalysis.ai/",
   "endpoint": "https://artificialanalysis.ai/api/v2/data/llms/models",
-  "fetchedAt": "2026-09-20T00:11:18.433Z",
-  "contentHash": "53419a14dba4c94d617b7b99f3984ca38f5f6aaface948a0d3c7bea85c092b10",
+  "fetchedAt": "2026-09-23T01:00:23.917Z",
+  "contentHash": "47733a524756ad9135dfb82d72348b1f69b3a42f1b0e30975a56f3fac4687c79",
   "methodologyVersion": null,
   "metricDefinitions": [
     {
@@ -49,6 +49,87 @@
     }
   ],
   "models": [
+    {
+      "id": "2f3c4dc9-a450-4303-8697-0237257cf08f",
+      "creatorID": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+      "name": "Claude Opus 5.5 (Adaptive Reasoning, Max Effort, Default Fallback)",
+      "slug": "claude-opus-5-5",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 57.6,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.614,
+        "livecodebench": null,
+        "scicode": 0.669,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.846666666666667,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
+      "id": "df5bf99d-d228-4715-b41b-19ca86118777",
+      "creatorID": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+      "name": "Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback)",
+      "slug": "claude-opus-5-5-xhigh",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 56,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.575,
+        "livecodebench": null,
+        "scicode": 0.65,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.846666666666667,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
+      "id": "f314eade-2232-44bf-a3ab-9b326bc67de6",
+      "creatorID": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+      "name": "Claude Opus 5.5 (Adaptive Reasoning, High Effort, Default Fallback)",
+      "slug": "claude-opus-5-5-high",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 53.6,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.556,
+        "livecodebench": null,
+        "scicode": 0.604,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.826666666666667,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
     {
       "id": "3e87c73e-a257-495e-9730-367a66229811",
       "creatorID": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
@@ -155,6 +236,33 @@
         "terminalbench_v2_1": 0.891385767790262,
         "tau2": null,
         "tau_banking": 0.430927835051546
+      }
+    },
+    {
+      "id": "ea9e0da6-169f-43c6-92f5-730a10d6ff8d",
+      "creatorID": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+      "name": "Claude Opus 5.5 (Adaptive Reasoning, Medium Effort, Default Fallback)",
+      "slug": "claude-opus-5-5-medium",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 51.2,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.547,
+        "livecodebench": null,
+        "scicode": 0.593,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.843333333333333,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
       }
     },
     {
@@ -401,6 +509,33 @@
       }
     },
     {
+      "id": "c50ea08c-88c0-4eb7-85b8-27f2bbf6d527",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Sol (max)",
+      "slug": "gpt-6-sol",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 47.5,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.479,
+        "livecodebench": null,
+        "scicode": 0.576,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.836666666666667,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
       "id": "d93edfe8-bf35-49ad-b56e-b18116142a1c",
       "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
       "name": "GPT-5.6 Sol (max)",
@@ -452,6 +587,87 @@
         "terminalbench_v2_1": 0.850187265917603,
         "tau2": null,
         "tau_banking": 0.389690721649485
+      }
+    },
+    {
+      "id": "59627802-1546-422c-9a65-65b61c022d36",
+      "creatorID": "a1e3ddcf-d3e4-44a5-9e8f-029a69850875",
+      "name": "Grok 4.7 (xhigh)",
+      "slug": "grok-4-7",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 46.4,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.431,
+        "livecodebench": null,
+        "scicode": 0.574,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.766666666666667,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
+      "id": "272f5f03-aea9-4675-a244-2b753b618cdf",
+      "creatorID": "a1e3ddcf-d3e4-44a5-9e8f-029a69850875",
+      "name": "Grok 4.7 (high)",
+      "slug": "grok-4-7-high",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 46.3,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.423,
+        "livecodebench": null,
+        "scicode": 0.578,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.77,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
+      "id": "24d8fdfe-6241-424e-b7b7-1b6efb06e4fb",
+      "creatorID": "5147c8b4-61d5-4070-9324-8adf8aa144c2",
+      "name": "MiMo-V2.6-Pro",
+      "slug": "mimo-v2-6-pro",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 46.3,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.494,
+        "livecodebench": null,
+        "scicode": 0.609,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.863333333333333,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
       }
     },
     {
@@ -644,6 +860,33 @@
       }
     },
     {
+      "id": "da2642fe-9f73-4788-b5af-24edcd55b37e",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Sol (xhigh)",
+      "slug": "gpt-6-sol-xhigh",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 44.1,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.463,
+        "livecodebench": null,
+        "scicode": 0.551,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.813333333333333,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
       "id": "d998db47-9b67-4727-a2bb-2e1261020ac0",
       "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
       "name": "GPT-5.6 Sol (xhigh)",
@@ -752,6 +995,33 @@
       }
     },
     {
+      "id": "52eebe3e-6ede-4e46-92db-c5dea49fc410",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Sol (high)",
+      "slug": "gpt-6-sol-high",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 42.8,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.441,
+        "livecodebench": null,
+        "scicode": 0.549,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.836666666666667,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
       "id": "8afc250d-b538-45a2-812a-4605f4ffd87e",
       "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
       "name": "GPT-5.6 Sol (high)",
@@ -776,6 +1046,33 @@
         "terminalbench_v2_1": 0.872659176029963,
         "tau2": 0.833333333333333,
         "tau_banking": 0.36701030927835
+      }
+    },
+    {
+      "id": "4416ca93-fde6-4b7b-abbc-3a6be109cc3d",
+      "creatorID": "f0aa413f-e8ae-4fcd-9c48-0e049f4f3128",
+      "name": "Claude Opus 5.5 (Adaptive Reasoning, Low Effort, Default Fallback)",
+      "slug": "claude-opus-5-5-low",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 42.3,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.483,
+        "livecodebench": null,
+        "scicode": 0.586,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.806666666666667,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
       }
     },
     {
@@ -992,6 +1289,33 @@
         "terminalbench_v2_1": 0.861423220973783,
         "tau2": null,
         "tau_banking": 0.45360824742268
+      }
+    },
+    {
+      "id": "780a4a85-17ff-4175-a8dd-ebca4823e61b",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Sol (medium)",
+      "slug": "gpt-6-sol-medium",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 39.8,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.41,
+        "livecodebench": null,
+        "scicode": 0.538,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.823333333333333,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
       }
     },
     {
@@ -1346,6 +1670,33 @@
       }
     },
     {
+      "id": "6fb13851-40ce-4bda-ad3f-6b38e0c5daa7",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Luna (max)",
+      "slug": "gpt-6-luna",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 37.3,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.385,
+        "livecodebench": null,
+        "scicode": 0.546,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.833333333333333,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
       "id": "b13c1257-d746-4027-8fc8-4892dc14701c",
       "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
       "name": "GPT-5.5 (high)",
@@ -1697,6 +2048,60 @@
       }
     },
     {
+      "id": "01459872-433a-4ab2-8e99-7083162172eb",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Sol (low)",
+      "slug": "gpt-6-sol-low",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 33.9,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.349,
+        "livecodebench": null,
+        "scicode": 0.502,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.793333333333333,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
+      "id": "19813eb2-460a-475c-af65-810bb8660fec",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Luna (xhigh)",
+      "slug": "gpt-6-luna-xhigh",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 33.9,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.343,
+        "livecodebench": null,
+        "scicode": 0.517,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.8,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
       "id": "6b79f899-e3c0-45f6-923c-243faccdb2fc",
       "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
       "name": "GPT-5.5 (medium)",
@@ -1989,6 +2394,33 @@
         "lcr": 0.746666666666667,
         "terminalbench_hard": null,
         "terminalbench_v2_1": 0.707865168539326,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
+      "id": "7d1229bc-deea-4717-ba5b-f59a35d991e3",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Luna (high)",
+      "slug": "gpt-6-luna-high",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 32.1,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.329,
+        "livecodebench": null,
+        "scicode": 0.503,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.793333333333333,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
         "tau2": null,
         "tau_banking": null
       }
@@ -2372,6 +2804,33 @@
       }
     },
     {
+      "id": "36667da0-9222-4967-adbb-f7efa15ad213",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Luna (medium)",
+      "slug": "gpt-6-luna-medium",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 29.5,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.283,
+        "livecodebench": null,
+        "scicode": 0.509,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.783333333333333,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
       "id": "69534bed-2ffd-4235-832b-e20a810333ab",
       "creatorID": "d874d370-74d3-4fa0-ba00-5272f92f946b",
       "name": "Qwen3.7 Max",
@@ -2612,6 +3071,33 @@
         "terminalbench_v2_1": 0.573033707865168,
         "tau2": null,
         "tau_banking": 0.232989690721649
+      }
+    },
+    {
+      "id": "d3e20e76-9e1a-45b6-b809-ad6aa37430cf",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Sol (Non-reasoning)",
+      "slug": "gpt-6-sol-non-reasoning",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 28.1,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.184,
+        "livecodebench": null,
+        "scicode": 0.473,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.64,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
       }
     },
     {
@@ -4478,33 +4964,6 @@
       }
     },
     {
-      "id": "353c92f3-2148-4c2d-9231-aa7e1322a1fd",
-      "creatorID": "d874d370-74d3-4fa0-ba00-5272f92f946b",
-      "name": "Qwen3.8 27B (Non-reasoning)",
-      "slug": "qwen3-8-27b-non-reasoning",
-      "evaluatedEffort": null,
-      "evaluatedAt": null,
-      "evaluations": {
-        "artificial_analysis_intelligence_index": 22.4,
-        "artificial_analysis_coding_index": 44.6,
-        "artificial_analysis_math_index": null,
-        "mmlu_pro": null,
-        "gpqa": 0.818,
-        "hle": 0.121,
-        "livecodebench": null,
-        "scicode": 0.362,
-        "math_500": null,
-        "aime": null,
-        "aime_25": null,
-        "ifbench": null,
-        "lcr": 0.693333333333333,
-        "terminalbench_hard": null,
-        "terminalbench_v2_1": 0.49063670411985,
-        "tau2": null,
-        "tau_banking": 0.2
-      }
-    },
-    {
       "id": "b2f3191f-77d6-4155-8be6-330f0baa1ae5",
       "creatorID": "faddc6d9-2c14-445f-9b28-56726f59c793",
       "name": "Gemini 3 Pro Preview (low)",
@@ -4883,6 +5342,33 @@
       }
     },
     {
+      "id": "bf9708d8-933d-44f6-affa-b696a7a650c9",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Luna (low)",
+      "slug": "gpt-6-luna-low",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 20.9,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.203,
+        "livecodebench": null,
+        "scicode": 0.469,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.74,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
+        "tau_banking": null
+      }
+    },
+    {
       "id": "6e2a2572-ed8d-4616-8d7d-68d125fc8ee7",
       "creatorID": "58b835bf-4c87-4f87-a846-df4b692c6e7d",
       "name": "DeepSeek V4 Pro 0424 (Non-reasoning)",
@@ -5231,6 +5717,33 @@
         "terminalbench_v2_1": null,
         "tau2": 0.807017543859649,
         "tau_banking": null
+      }
+    },
+    {
+      "id": "353c92f3-2148-4c2d-9231-aa7e1322a1fd",
+      "creatorID": "d874d370-74d3-4fa0-ba00-5272f92f946b",
+      "name": "Qwen3.8 27B (Non-reasoning)",
+      "slug": "qwen3-8-27b-non-reasoning",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 20.2,
+        "artificial_analysis_coding_index": 44.6,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": 0.818,
+        "hle": 0.121,
+        "livecodebench": null,
+        "scicode": 0.362,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.693333333333333,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": 0.49063670411985,
+        "tau2": null,
+        "tau_banking": 0.2
       }
     },
     {
@@ -5770,6 +6283,33 @@
         "terminalbench_hard": 0.356060606060606,
         "terminalbench_v2_1": null,
         "tau2": 0.725146198830409,
+        "tau_banking": null
+      }
+    },
+    {
+      "id": "63cb48ea-0b0c-4e07-8ded-6d28dec4fa28",
+      "creatorID": "e67e56e3-15cd-43db-b679-da4660a69f41",
+      "name": "GPT-6 Luna (Non-reasoning)",
+      "slug": "gpt-6-luna-non-reasoning",
+      "evaluatedEffort": null,
+      "evaluatedAt": null,
+      "evaluations": {
+        "artificial_analysis_intelligence_index": 18.3,
+        "artificial_analysis_coding_index": null,
+        "artificial_analysis_math_index": null,
+        "mmlu_pro": null,
+        "gpqa": null,
+        "hle": 0.086,
+        "livecodebench": null,
+        "scicode": 0.431,
+        "math_500": null,
+        "aime": null,
+        "aime_25": null,
+        "ifbench": null,
+        "lcr": 0.396666666666667,
+        "terminalbench_hard": null,
+        "terminalbench_v2_1": null,
+        "tau2": null,
         "tau_banking": null
       }
     },
