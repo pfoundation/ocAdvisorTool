@@ -827,9 +827,13 @@ function classifyAdvisorError(message: string): string {
 
 // Tags a generation failure with the serving route so error rows name it.
 // Returns the same error for rethrowing; non-Error values pass through.
+// The assignment itself is guarded: a frozen rejection must never replace
+// the original error with a TypeError.
 function withAdvisorProvider(err: unknown, provider: string): unknown {
   if (err instanceof Error) {
-    (err as Error & { advisorProvider?: string }).advisorProvider = provider;
+    try {
+      (err as Error & { advisorProvider?: string }).advisorProvider = provider;
+    } catch {}
   }
   return err;
 }
