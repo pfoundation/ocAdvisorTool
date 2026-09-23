@@ -51,6 +51,18 @@ const BINDINGS: BindingSpec[] = [
   {
     providerID: "anthropic",
     modelID: "claude-fable-5-1",
+    variant: "medium",
+    slug: "claude-fable-5-1-medium",
+  },
+  {
+    providerID: "anthropic",
+    modelID: "claude-fable-5-1",
+    variant: "low",
+    slug: "claude-fable-5-1-low",
+  },
+  {
+    providerID: "anthropic",
+    modelID: "claude-fable-5-1",
     variant: null,
     slug: "claude-fable-5-1",
   },
@@ -84,6 +96,80 @@ const BINDINGS: BindingSpec[] = [
     variant: null,
     slug: "claude-opus-4-8",
   },
+  // Anthropic advisor model (Opus 5.5), direct and via the opencode
+  // gateway fallback route.
+  {
+    providerID: "anthropic",
+    modelID: "claude-opus-5-5",
+    variant: "max",
+    slug: "claude-opus-5-5",
+  },
+  {
+    providerID: "anthropic",
+    modelID: "claude-opus-5-5",
+    variant: "xhigh",
+    slug: "claude-opus-5-5-xhigh",
+  },
+  {
+    providerID: "anthropic",
+    modelID: "claude-opus-5-5",
+    variant: "high",
+    slug: "claude-opus-5-5-high",
+  },
+  {
+    providerID: "anthropic",
+    modelID: "claude-opus-5-5",
+    variant: "medium",
+    slug: "claude-opus-5-5-medium",
+  },
+  {
+    providerID: "anthropic",
+    modelID: "claude-opus-5-5",
+    variant: "low",
+    slug: "claude-opus-5-5-low",
+  },
+  {
+    providerID: "anthropic",
+    modelID: "claude-opus-5-5",
+    variant: null,
+    slug: "claude-opus-5-5",
+  },
+  {
+    providerID: "opencode",
+    modelID: "claude-opus-5-5",
+    variant: "max",
+    slug: "claude-opus-5-5",
+  },
+  {
+    providerID: "opencode",
+    modelID: "claude-opus-5-5",
+    variant: "xhigh",
+    slug: "claude-opus-5-5-xhigh",
+  },
+  {
+    providerID: "opencode",
+    modelID: "claude-opus-5-5",
+    variant: "high",
+    slug: "claude-opus-5-5-high",
+  },
+  {
+    providerID: "opencode",
+    modelID: "claude-opus-5-5",
+    variant: "medium",
+    slug: "claude-opus-5-5-medium",
+  },
+  {
+    providerID: "opencode",
+    modelID: "claude-opus-5-5",
+    variant: "low",
+    slug: "claude-opus-5-5-low",
+  },
+  {
+    providerID: "opencode",
+    modelID: "claude-opus-5-5",
+    variant: null,
+    slug: "claude-opus-5-5",
+  },
   // OpenAI.
   {
     providerID: "openai",
@@ -109,6 +195,90 @@ const BINDINGS: BindingSpec[] = [
     variant: "high",
     slug: "gpt-6-astra-high",
   },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-astra",
+    variant: "medium",
+    slug: "gpt-6-astra-medium",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-astra",
+    variant: "low",
+    slug: "gpt-6-astra-low",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-sol",
+    variant: null,
+    slug: "gpt-6-sol",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-sol",
+    variant: "max",
+    slug: "gpt-6-sol",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-sol",
+    variant: "xhigh",
+    slug: "gpt-6-sol-xhigh",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-sol",
+    variant: "high",
+    slug: "gpt-6-sol-high",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-sol",
+    variant: "medium",
+    slug: "gpt-6-sol-medium",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-sol",
+    variant: "low",
+    slug: "gpt-6-sol-low",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-luna",
+    variant: null,
+    slug: "gpt-6-luna",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-luna",
+    variant: "max",
+    slug: "gpt-6-luna",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-luna",
+    variant: "xhigh",
+    slug: "gpt-6-luna-xhigh",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-luna",
+    variant: "high",
+    slug: "gpt-6-luna-high",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-luna",
+    variant: "medium",
+    slug: "gpt-6-luna-medium",
+  },
+  {
+    providerID: "openai",
+    modelID: "gpt-6-luna",
+    variant: "low",
+    slug: "gpt-6-luna-low",
+  },
   // Meta.
   {
     providerID: "meta",
@@ -128,6 +298,30 @@ const BINDINGS: BindingSpec[] = [
     variant: "xhigh",
     slug: "muse-spark-1-3-xhigh",
   },
+  {
+    providerID: "meta",
+    modelID: "muse-spark-1.2",
+    variant: "xhigh",
+    slug: "muse-spark-1-2",
+  },
+  {
+    providerID: "meta",
+    modelID: "muse-spark-1.2",
+    variant: null,
+    slug: "muse-spark-1-2",
+  },
+  {
+    providerID: "opencode",
+    modelID: "muse-spark-1.2",
+    variant: "xhigh",
+    slug: "muse-spark-1-2",
+  },
+  {
+    providerID: "opencode",
+    modelID: "muse-spark-1.2",
+    variant: null,
+    slug: "muse-spark-1-2",
+  },
   // xAI.
   { providerID: "xai", modelID: "grok-4.6", variant: null, slug: "grok-4-6" },
   { providerID: "xai", modelID: "grok-4.6", variant: "high", slug: "grok-4-6" },
@@ -137,9 +331,25 @@ const BINDINGS: BindingSpec[] = [
     variant: "xhigh",
     slug: "grok-4-6-xhigh",
   },
-  // DeepSeek. OpenCode serves the dotted model ID; the official route uses
-  // the same model behind the `deepseek` provider, so the cross-provider
-  // option covers routed sessions without duplicating every provider.
+  // Grok 4.7: the base entry is evaluated at xhigh, with a separate high
+  // entry. There is no max entry; the null variant follows the base.
+  { providerID: "xai", modelID: "grok-4.7", variant: null, slug: "grok-4-7" },
+  {
+    providerID: "xai",
+    modelID: "grok-4.7",
+    variant: "xhigh",
+    slug: "grok-4-7",
+  },
+  {
+    providerID: "xai",
+    modelID: "grok-4.7",
+    variant: "high",
+    slug: "grok-4-7-high",
+  },
+  // DeepSeek. The official route mirrors the dotted model ID; heavily used
+  // gateway routes get explicit bindings so matching works with the default
+  // provider-strict policy (the opt-in cross-provider fallback covers the
+  // rest).
   {
     providerID: "deepseek",
     modelID: "deepseek-v4.1-flash",
@@ -149,6 +359,42 @@ const BINDINGS: BindingSpec[] = [
   {
     providerID: "deepseek",
     modelID: "deepseek-v4.1-flash",
+    variant: null,
+    slug: "deepseek-v4-1-flash",
+  },
+  {
+    providerID: "opencode-go",
+    modelID: "deepseek-v4.1-flash",
+    variant: "max",
+    slug: "deepseek-v4-1-flash",
+  },
+  {
+    providerID: "opencode-go",
+    modelID: "deepseek-v4.1-flash",
+    variant: null,
+    slug: "deepseek-v4-1-flash",
+  },
+  {
+    providerID: "opencode",
+    modelID: "deepseek-v4.1-flash",
+    variant: "max",
+    slug: "deepseek-v4-1-flash",
+  },
+  {
+    providerID: "opencode",
+    modelID: "deepseek-v4.1-flash",
+    variant: null,
+    slug: "deepseek-v4-1-flash",
+  },
+  {
+    providerID: "vllm",
+    modelID: "deepseek-ai/DeepSeek-V4.1-Flash",
+    variant: "max",
+    slug: "deepseek-v4-1-flash",
+  },
+  {
+    providerID: "vllm",
+    modelID: "deepseek-ai/DeepSeek-V4.1-Flash",
     variant: null,
     slug: "deepseek-v4-1-flash",
   },
@@ -273,6 +519,8 @@ function buildMappings(snapshot: BenchmarkSnapshot): void {
   }
   if (missing.length > 0) {
     log(`mapping slugs missing from the snapshot: ${missing.join(", ")}`);
+    log("refresh the snapshot or drop the stale binding specs, then retry");
+    process.exit(1);
   }
   const mappings = { schemaVersion: 1, bindings };
   writeFileSync(

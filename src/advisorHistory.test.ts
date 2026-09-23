@@ -6,6 +6,7 @@ import {
   isAdvisorToolName,
   isDisabledNotice,
   isFailureFooter,
+  isSelfConsultNotice,
   isSkipNotice,
   queryAdvisorHistory,
   sessionsWithAdvice,
@@ -49,6 +50,14 @@ describe("classification helpers", () => {
     expect(
       isDisabledNotice("advisor is disabled for anthropic/claude-fable"),
     ).toBe(true);
+    expect(
+      isSelfConsultNotice(
+        "advisor is disabled: the current model is already the advisor model (anthropic/claude-opus-5-5).",
+      ),
+    ).toBe(true);
+    expect(
+      isSelfConsultNotice("advisor is disabled for anthropic/claude-fable"),
+    ).toBe(false);
     expect(isSkipNotice("advisor consultation skipped (typesafe): ...")).toBe(
       true,
     );
@@ -128,6 +137,42 @@ describe("queryAdvisorHistory", () => {
     expect(countGenerations(history.calls)).toEqual({
       skipped_fable: 1,
       skipped_typesafe: 1,
+    });
+    expect(sessionsWithAdvice(history.calls).size).toBe(0);
+  });
+
+  test("classifies self-consultation notices apart from legacy Fable skips", () => {
+    const db = openFixtureDb();
+    addAssistant(db, "msg_1", "ses_a", START + 1000, [
+      toolBlock("call_1", {
+        status: "completed",
+        input: { mode: "general" },
+        content: [
+          {
+            type: "text",
+            text: "advisor is disabled: the current model is already the advisor model (anthropic/claude-opus-5-5).",
+          },
+        ],
+        time: { ran: START + 1000 },
+      }),
+    ]);
+    addAssistant(db, "msg_2", "ses_b", START + 2000, [
+      toolBlock("call_2", {
+        status: "completed",
+        input: { mode: "general" },
+        content: [
+          {
+            type: "text",
+            text: "advisor is disabled for anthropic/claude-fable-* sessions — the current model is already Fable.",
+          },
+        ],
+        time: { ran: START + 2000 },
+      }),
+    ]);
+    const history = queryAdvisorHistory(db, START, END);
+    expect(countGenerations(history.calls)).toEqual({
+      skipped_self: 1,
+      skipped_fable: 1,
     });
     expect(sessionsWithAdvice(history.calls).size).toBe(0);
   });

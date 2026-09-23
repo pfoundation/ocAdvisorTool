@@ -47,13 +47,28 @@ function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+// Normalizes a model id for cross-route comparison: the last path segment
+// (gateway routes nest the vendor id, e.g.
+// `openrouter/anthropic/claude-opus-5-5`), lowercased, with dots treated as
+// dashes (`deepseek-v4.1-flash` vs `deepseek-v4-1-flash`). Shared by the
+// plugin's self-consultation guard and the usage report so both agree on
+// what "the advisor model" means.
+export function normalizeModelID(id: string): string {
+  const segments = id.split("/");
+  const last = segments[segments.length - 1] ?? id;
+  return last.trim().toLowerCase().replace(/\./g, "-");
+}
+
 function parseModelShape(value: unknown): ParsedModel | null {
   if (!value || typeof value !== "object") return null;
   const shape = value as Record<string, unknown>;
   const providerID = clean(shape.providerID ?? shape.provider);
   const modelID = clean(shape.id ?? shape.modelID);
   if (!providerID || !modelID) return null;
-  const variant = clean(shape.variant);
+  let variant = clean(shape.variant);
+  // OpenCode records an unset effort as "default" on some routes; treat it
+  // as unknown so matching falls back to the null-variant binding.
+  if (variant.toLowerCase() === "default") variant = "";
   return { providerID, modelID, variant: variant ? variant : null };
 }
 

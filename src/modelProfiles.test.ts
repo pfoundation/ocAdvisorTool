@@ -279,6 +279,28 @@ describe("resolveRequesterProfile", () => {
     expect(profile.modelID).toBe("reasoner-1");
   });
 
+  test("treats a recorded default effort as unset", () => {
+    const db = openFixtureDb();
+    addMessage(db, {
+      id: "msg_origin",
+      sessionId: "ses_main",
+      type: "assistant",
+      seq: 10,
+      data: assistantData({
+        providerID: "anthropic",
+        id: "claude-opus-4-6",
+        variant: "default",
+      }),
+    });
+
+    const profile = resolveRequesterProfile(db, {
+      sessionId: "ses_main",
+      messageID: "msg_origin",
+    });
+    expect(profile.variant).toBeNull();
+    expect(profile.provenance).toBe("invocation_message");
+  });
+
   test("falls back to the labeled session model", () => {
     const db = openFixtureDb();
     const profile = resolveRequesterProfile(db, {

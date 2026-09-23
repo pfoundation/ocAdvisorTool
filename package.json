@@ -1,7 +1,7 @@
 {
   "name": "@pfoundation/ocadvisor",
   "version": "26.9.1",
-  "description": "OpenCode V2 plugin: consult Claude Fable 5.1 as senior advisor via OpenCode session generation",
+  "description": "OpenCode V2 plugin: consult Claude Opus 5.5 as senior advisor via OpenCode session generation",
   "type": "module",
   "license": "MIT",
   "author": "P Foundation",

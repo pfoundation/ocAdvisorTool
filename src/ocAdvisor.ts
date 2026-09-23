@@ -17,6 +17,7 @@ import {
   type BenchmarkView,
 } from "./benchmarkStore.js";
 import {
+  normalizeModelID,
   resolveAdvisorProfile,
   resolveRequesterProfile,
   type AdvisorProfile,
@@ -45,8 +46,11 @@ const METRICS_PATH = join(
   ".local/share/opencode/ocAdvisor-metrics.jsonl",
 );
 const ADVISOR_PROVIDER = "anthropic";
-const ADVISOR_MODEL = "claude-fable-5-1";
+const ADVISOR_MODEL = "claude-opus-5-5";
 const ADVISOR_VARIANT = "xhigh";
+// Gateway provider used when the configured Anthropic advisor is
+// unavailable (see callAdvisor). Same model, different route.
+const ADVISOR_FALLBACK_PROVIDER = "opencode";
 const ADVISOR_SESSION_TITLE = "advisor";
 // Sessions created before the ocAdvisor → advisor rename keep working: title
 // discovery accepts both, and the storage key below is unchanged.
@@ -56,17 +60,21 @@ const ADVISOR_TIMEOUT_MS = 300_000;
 // Effort levels the agent may request per call when `agentEffort: true`
 // (subset of the model's catalog variants; validated per consultation).
 const AGENT_EFFORT_DEFAULTS = ["high", "xhigh", "max"];
-const FABLE_DISABLED =
-  "advisor is disabled for anthropic/claude-fable-* sessions — the current model is already Fable.";
+// Prefix of the self-consultation notice. The full message names the
+// configured advisor model; history parsing matches this prefix so the
+// classifier never depends on the model name.
+const SELF_CONSULT_PREFIX =
+  "advisor is disabled: the current model is already the advisor model";
 
 // The advisor model is configurable via plugin options in opencode.json
-// (`{ "package": "...", "options": { "model": "anthropic/claude-fable-5-1#xhigh" } }`)
+// (`{ "package": "...", "options": { "model": "anthropic/claude-opus-5-5#xhigh" } }`)
 // or, for symlink/auto-discovered installs that cannot receive options,
 // via environment variables (OCADVISOR_MODEL, OCADVISOR_PROVIDER,
 // OCADVISOR_VARIANT, OCADVISOR_TIMEOUT_MS, OCADVISOR_MAX_TRANSCRIPT_CHARS,
 // OCADVISOR_AGENT_EFFORT, OCADVISOR_BENCHMARKS_PATH,
 // OCADVISOR_BENCHMARK_MAPPINGS_PATH, OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER).
-// Defaults preserve the original behavior: anthropic/claude-fable-5-1#xhigh.
+// Defaults: anthropic/claude-opus-5-5#xhigh, with one opencode retry when the
+// Anthropic route is unavailable.
 interface AdvisorConfig {
   provider: string;
   model: string;
@@ -76,7 +84,7 @@ interface AdvisorConfig {
   agentEffort: string[] | null;
   // Exact caller `provider/model` IDs that must not see or invoke advisor.
   // Matching ignores effort variants. Empty means no configured exclusions;
-  // the Fable self-consultation guard still applies.
+  // the advisor self-consultation guard still applies.
   disabledForModels: string[];
   // Explicit benchmark file locations. Each field falls back to its
   // environment variable, then the shared data-directory default; empty
@@ -351,8 +359,7 @@ function envAdvisorConfigSource(
             mappingsPath: env.OCADVISOR_BENCHMARK_MAPPINGS_PATH,
             ...(env.OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER !== undefined
               ? {
-                  matchAnyProvider:
-                    env.OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER,
+                  matchAnyProvider: env.OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER,
                 }
               : {}),
           },
@@ -444,7 +451,7 @@ type AdvisorTrigger = (typeof ADVISOR_TRIGGERS)[number];
 
 type AdvisorOutcome =
   | "advisor_response"
-  | "skipped_fable"
+  | "skipped_self"
   | "skipped_model"
   | "skipped_typesafe"
   | "error"
@@ -487,6 +494,10 @@ interface AdvisorMetrics {
   via: string;
   gate?: GateRecord;
   benchmarks?: BenchmarkMetricsSummary;
+  // Provider route that served the generation (`opencode` when the Anthropic
+  // fallback fired). Present only on generated responses; older rows and
+  // non-generating outcomes omit it.
+  advisorProvider?: string;
 }
 
 // Compact benchmark evidence for the metrics log. Older rows omit the
@@ -655,27 +666,31 @@ function parseModelJson(raw: string | null | undefined): SessionModel | null {
   return null;
 }
 
-function isFableModel(
+// True when the caller already runs the configured advisor model, on any
+// provider route and at any effort variant: asking would be
+// self-consultation. The provider is intentionally ignored — the same model
+// behind another route is still the same advisor.
+function isAdvisorModel(
   model:
     | {
         providerID?: string;
         provider?: string;
         id?: string;
         modelID?: string;
+        variant?: string;
       }
     | null
     | undefined,
+  config: AdvisorConfig,
 ): boolean {
   if (!model) return false;
-  const provider = String(
-    model.providerID || model.provider || "",
-  ).toLowerCase();
-  const id = String(model.id || model.modelID || "").toLowerCase();
-  return provider.includes("anthropic") && id.includes("fable");
+  const id = String(model.id || model.modelID || "");
+  if (!id.trim()) return false;
+  return normalizeModelID(id) === normalizeModelID(config.model);
 }
 
 type AdvisorDisabledReason = {
-  outcome: "skipped_fable" | "skipped_model";
+  outcome: "skipped_self" | "skipped_model";
   message: string;
 };
 
@@ -692,8 +707,11 @@ function advisorDisabledReason(
     | undefined,
   config: AdvisorConfig,
 ): AdvisorDisabledReason | null {
-  if (isFableModel(model)) {
-    return { outcome: "skipped_fable", message: FABLE_DISABLED };
+  if (isAdvisorModel(model, config)) {
+    return {
+      outcome: "skipped_self",
+      message: `${SELF_CONSULT_PREFIX} (${config.provider}/${config.model}).`,
+    };
   }
   const provider = model?.providerID || model?.provider;
   const id = model?.id || model?.modelID;
@@ -1814,6 +1832,7 @@ async function callAdvisor(opts: {
   inputTokens: null;
   outputTokens: null;
   variant: string | undefined;
+  provider: string;
 }> {
   const runtime = opts.runtime;
   const config = opts.config ?? DEFAULT_ADVISOR_CONFIG;
@@ -1823,7 +1842,33 @@ async function callAdvisor(opts: {
     );
   }
 
-  const support = await checkAdvisorSupport(runtime, config, opts.effort);
+  // Anthropic first, opencode on retry: when the configured Anthropic
+  // advisor is unavailable (provider off, model missing, no connection), one
+  // attempt through the opencode gateway keeps consultations working. Any
+  // other failure — including a failed fallback — reports the primary reason
+  // so the caller sees why the configured route did not work. Gate evidence
+  // was built from the primary config; the anthropic/ and opencode/ bindings
+  // point at the same Artificial Analysis records, so the scores still apply.
+  let activeConfig = config;
+  let support = await checkAdvisorSupport(runtime, config, opts.effort);
+  if (
+    !support.supported &&
+    config.provider.toLowerCase() === ADVISOR_PROVIDER
+  ) {
+    const fallbackConfig = { ...config, provider: ADVISOR_FALLBACK_PROVIDER };
+    const fallback = await checkAdvisorSupport(
+      runtime,
+      fallbackConfig,
+      opts.effort,
+    );
+    if (fallback.supported) {
+      console.log(
+        `[advisor] anthropic route unavailable (${support.reason}); using ${fallbackConfig.provider}/${fallbackConfig.model}`,
+      );
+      activeConfig = fallbackConfig;
+      support = fallback;
+    }
+  }
   if (!support.supported) {
     throw new Error(support.reason);
   }
@@ -1843,7 +1888,7 @@ async function callAdvisor(opts: {
         const sessionId = await ensureAdvisorSession(
           runtime,
           support.variant,
-          config,
+          activeConfig,
         );
         const request = { sessionID: sessionId, prompt };
         const startedAt = Date.now();
@@ -1860,7 +1905,7 @@ async function callAdvisor(opts: {
         let output = await run();
         if (!output?.trim() && !opts.signal?.aborted) {
           const elapsed = Date.now() - startedAt;
-          if (elapsed < config.timeoutMs / 2) {
+          if (elapsed < activeConfig.timeoutMs / 2) {
             console.log(
               `[advisor] empty generation; retrying once (session=${sessionId} elapsedMs=${elapsed})`,
             );
@@ -1872,19 +1917,20 @@ async function callAdvisor(opts: {
         }
         return output;
       })(),
-      config.timeoutMs,
+      activeConfig.timeoutMs,
       "Advisor generation",
     ),
   );
 
   const modelLabel = support.variant
-    ? `${config.provider}/${config.model} (effort=${support.variant})`
-    : `${config.provider}/${config.model}`;
+    ? `${activeConfig.provider}/${activeConfig.model} (effort=${support.variant})`
+    : `${activeConfig.provider}/${activeConfig.model}`;
   return {
     text: `${text}\n\n---\n_advisor via OpenCode: ${modelLabel} (token usage unavailable via session generation)_`,
     inputTokens: null,
     outputTokens: null,
     variant: support.variant,
+    provider: activeConfig.provider,
   };
 }
 
@@ -2295,6 +2341,7 @@ async function runAdvisor(opts: {
           benchmarkLoaded,
           result.variant ?? effectiveEffort ?? requestedEffort ?? null,
         ),
+        advisorProvider: result.provider,
       });
       console.log(
         `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=advisor_response latencyMs=${latencyMs}`,
@@ -2417,7 +2464,7 @@ export async function setupOcAdvisorV2(
         if (!event.tools) return;
         // `event.tools` lists the direct tools available to this request.
         // OpenCode drops entries a hook adds for tools it did not register,
-        // so the hook can only hide the tool (Fable or opted-out sessions),
+        // so the hook can only hide the tool (advisor-model or opted-out sessions),
         // never add it. The checkpoint instruction is injected only when
         // the tool is actually available, e.g. not when a permission rule
         // removed it.
@@ -2478,7 +2525,7 @@ export {
   advisorDisabledReason,
   inferTrigger,
   isAdvisorToolName,
-  isFableModel,
+  isAdvisorModel,
   isProviderUsable,
   parseModelRef,
   resolveAdvisorConfig,

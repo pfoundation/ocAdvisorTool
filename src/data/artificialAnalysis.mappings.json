@@ -28,6 +28,22 @@
     {
       "providerID": "anthropic",
       "modelID": "claude-fable-5-1",
+      "variant": "medium",
+      "aaModelID": "3b7de71c-e034-4591-8ca6-6b6be2fa471f",
+      "evaluatedEffort": "medium",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-1-medium"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-fable-5-1",
+      "variant": "low",
+      "aaModelID": "05776db7-f5c0-40f7-b824-079160f8cfa8",
+      "evaluatedEffort": "low",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-1-low"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-fable-5-1",
       "variant": null,
       "aaModelID": "3e87c73e-a257-495e-9730-367a66229811",
       "evaluatedEffort": "max",
@@ -74,6 +90,102 @@
       "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-4-8"
     },
     {
+      "providerID": "anthropic",
+      "modelID": "claude-opus-5-5",
+      "variant": "max",
+      "aaModelID": "2f3c4dc9-a450-4303-8697-0237257cf08f",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-opus-5-5",
+      "variant": "xhigh",
+      "aaModelID": "df5bf99d-d228-4715-b41b-19ca86118777",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5-xhigh"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-opus-5-5",
+      "variant": "high",
+      "aaModelID": "f314eade-2232-44bf-a3ab-9b326bc67de6",
+      "evaluatedEffort": "high",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5-high"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-opus-5-5",
+      "variant": "medium",
+      "aaModelID": "ea9e0da6-169f-43c6-92f5-730a10d6ff8d",
+      "evaluatedEffort": "medium",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5-medium"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-opus-5-5",
+      "variant": "low",
+      "aaModelID": "4416ca93-fde6-4b7b-abbc-3a6be109cc3d",
+      "evaluatedEffort": "low",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5-low"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-opus-5-5",
+      "variant": null,
+      "aaModelID": "2f3c4dc9-a450-4303-8697-0237257cf08f",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-opus-5-5",
+      "variant": "max",
+      "aaModelID": "2f3c4dc9-a450-4303-8697-0237257cf08f",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-opus-5-5",
+      "variant": "xhigh",
+      "aaModelID": "df5bf99d-d228-4715-b41b-19ca86118777",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5-xhigh"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-opus-5-5",
+      "variant": "high",
+      "aaModelID": "f314eade-2232-44bf-a3ab-9b326bc67de6",
+      "evaluatedEffort": "high",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5-high"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-opus-5-5",
+      "variant": "medium",
+      "aaModelID": "ea9e0da6-169f-43c6-92f5-730a10d6ff8d",
+      "evaluatedEffort": "medium",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5-medium"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-opus-5-5",
+      "variant": "low",
+      "aaModelID": "4416ca93-fde6-4b7b-abbc-3a6be109cc3d",
+      "evaluatedEffort": "low",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5-low"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-opus-5-5",
+      "variant": null,
+      "aaModelID": "2f3c4dc9-a450-4303-8697-0237257cf08f",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-opus-5-5"
+    },
+    {
       "providerID": "openai",
       "modelID": "gpt-6-astra",
       "variant": null,
@@ -106,6 +218,118 @@
       "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-astra-high"
     },
     {
+      "providerID": "openai",
+      "modelID": "gpt-6-astra",
+      "variant": "medium",
+      "aaModelID": "e97a4ef5-e817-480e-9595-12f81dc4974f",
+      "evaluatedEffort": "medium",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-astra-medium"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-astra",
+      "variant": "low",
+      "aaModelID": "a3f8100d-e38f-408b-b0fa-0085dae18dc1",
+      "evaluatedEffort": "low",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-astra-low"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-sol",
+      "variant": null,
+      "aaModelID": "c50ea08c-88c0-4eb7-85b8-27f2bbf6d527",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-sol"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-sol",
+      "variant": "max",
+      "aaModelID": "c50ea08c-88c0-4eb7-85b8-27f2bbf6d527",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-sol"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-sol",
+      "variant": "xhigh",
+      "aaModelID": "da2642fe-9f73-4788-b5af-24edcd55b37e",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-sol-xhigh"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-sol",
+      "variant": "high",
+      "aaModelID": "52eebe3e-6ede-4e46-92db-c5dea49fc410",
+      "evaluatedEffort": "high",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-sol-high"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-sol",
+      "variant": "medium",
+      "aaModelID": "780a4a85-17ff-4175-a8dd-ebca4823e61b",
+      "evaluatedEffort": "medium",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-sol-medium"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-sol",
+      "variant": "low",
+      "aaModelID": "01459872-433a-4ab2-8e99-7083162172eb",
+      "evaluatedEffort": "low",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-sol-low"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-luna",
+      "variant": null,
+      "aaModelID": "6fb13851-40ce-4bda-ad3f-6b38e0c5daa7",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-luna"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-luna",
+      "variant": "max",
+      "aaModelID": "6fb13851-40ce-4bda-ad3f-6b38e0c5daa7",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-luna"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-luna",
+      "variant": "xhigh",
+      "aaModelID": "19813eb2-460a-475c-af65-810bb8660fec",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-luna-xhigh"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-luna",
+      "variant": "high",
+      "aaModelID": "7d1229bc-deea-4717-ba5b-f59a35d991e3",
+      "evaluatedEffort": "high",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-luna-high"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-luna",
+      "variant": "medium",
+      "aaModelID": "36667da0-9222-4967-adbb-f7efa15ad213",
+      "evaluatedEffort": "medium",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-luna-medium"
+    },
+    {
+      "providerID": "openai",
+      "modelID": "gpt-6-luna",
+      "variant": "low",
+      "aaModelID": "bf9708d8-933d-44f6-affa-b696a7a650c9",
+      "evaluatedEffort": "low",
+      "evidenceURL": "https://artificialanalysis.ai/models/gpt-6-luna-low"
+    },
+    {
       "providerID": "meta",
       "modelID": "muse-spark-1.3",
       "variant": null,
@@ -128,6 +352,38 @@
       "aaModelID": "d5170215-69be-4129-849b-26d8d8825bfc",
       "evaluatedEffort": "xhigh",
       "evidenceURL": "https://artificialanalysis.ai/models/muse-spark-1-3-xhigh"
+    },
+    {
+      "providerID": "meta",
+      "modelID": "muse-spark-1.2",
+      "variant": "xhigh",
+      "aaModelID": "04ee6719-0327-463b-a1a1-70a6a78254f9",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/muse-spark-1-2"
+    },
+    {
+      "providerID": "meta",
+      "modelID": "muse-spark-1.2",
+      "variant": null,
+      "aaModelID": "04ee6719-0327-463b-a1a1-70a6a78254f9",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/muse-spark-1-2"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "muse-spark-1.2",
+      "variant": "xhigh",
+      "aaModelID": "04ee6719-0327-463b-a1a1-70a6a78254f9",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/muse-spark-1-2"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "muse-spark-1.2",
+      "variant": null,
+      "aaModelID": "04ee6719-0327-463b-a1a1-70a6a78254f9",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/muse-spark-1-2"
     },
     {
       "providerID": "xai",
@@ -154,6 +410,30 @@
       "evidenceURL": "https://artificialanalysis.ai/models/grok-4-6-xhigh"
     },
     {
+      "providerID": "xai",
+      "modelID": "grok-4.7",
+      "variant": null,
+      "aaModelID": "59627802-1546-422c-9a65-65b61c022d36",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/grok-4-7"
+    },
+    {
+      "providerID": "xai",
+      "modelID": "grok-4.7",
+      "variant": "xhigh",
+      "aaModelID": "59627802-1546-422c-9a65-65b61c022d36",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/grok-4-7"
+    },
+    {
+      "providerID": "xai",
+      "modelID": "grok-4.7",
+      "variant": "high",
+      "aaModelID": "272f5f03-aea9-4675-a244-2b753b618cdf",
+      "evaluatedEffort": "high",
+      "evidenceURL": "https://artificialanalysis.ai/models/grok-4-7-high"
+    },
+    {
       "providerID": "deepseek",
       "modelID": "deepseek-v4.1-flash",
       "variant": "max",
@@ -164,6 +444,54 @@
     {
       "providerID": "deepseek",
       "modelID": "deepseek-v4.1-flash",
+      "variant": null,
+      "aaModelID": "dbe7c625-3100-4463-b479-a228c41f75dd",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-1-flash"
+    },
+    {
+      "providerID": "opencode-go",
+      "modelID": "deepseek-v4.1-flash",
+      "variant": "max",
+      "aaModelID": "dbe7c625-3100-4463-b479-a228c41f75dd",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-1-flash"
+    },
+    {
+      "providerID": "opencode-go",
+      "modelID": "deepseek-v4.1-flash",
+      "variant": null,
+      "aaModelID": "dbe7c625-3100-4463-b479-a228c41f75dd",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-1-flash"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "deepseek-v4.1-flash",
+      "variant": "max",
+      "aaModelID": "dbe7c625-3100-4463-b479-a228c41f75dd",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-1-flash"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "deepseek-v4.1-flash",
+      "variant": null,
+      "aaModelID": "dbe7c625-3100-4463-b479-a228c41f75dd",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-1-flash"
+    },
+    {
+      "providerID": "vllm",
+      "modelID": "deepseek-ai/DeepSeek-V4.1-Flash",
+      "variant": "max",
+      "aaModelID": "dbe7c625-3100-4463-b479-a228c41f75dd",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/deepseek-v4-1-flash"
+    },
+    {
+      "providerID": "vllm",
+      "modelID": "deepseek-ai/DeepSeek-V4.1-Flash",
       "variant": null,
       "aaModelID": "dbe7c625-3100-4463-b479-a228c41f75dd",
       "evaluatedEffort": "max",

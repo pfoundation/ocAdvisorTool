@@ -8,7 +8,12 @@
  * how often is advisor consulted, with what outcome, and how many
  * eligible sessions never consult it?
  *
- * Run: bun src/usageReport.ts [--days N]
+ * Run: bun src/usageReport.ts [--days N] [--advisor-model ID]
+ *
+ * The eligibility proxy excludes the advisor model itself (it cannot consult
+ * itself); --advisor-model overrides which id that is. A window spanning an
+ * advisor-model change counts pre-switch advisor sessions as eligible, which
+ * slightly understates coverage for those days.
  */
 import { Database } from "bun:sqlite";
 import { homedir } from "os";
@@ -19,6 +24,7 @@ import {
   queryAdvisorHistory,
   sessionsWithAdvice,
 } from "./advisorHistory.js";
+import { normalizeModelID } from "./modelProfiles.js";
 
 const DB_PATH = join(homedir(), ".local/share/opencode/opencode.db");
 const METRICS_PATH = join(
@@ -64,17 +70,23 @@ interface MetricsRow {
   };
 }
 
-function parseArgs(): { days: number } {
+function parseArgs(): { days: number; advisorModel: string } {
   const args = process.argv.slice(2);
   let days = 30;
+  // Must match ADVISOR_MODEL in src/ocAdvisor.ts until the report learns to
+  // read the plugin config.
+  let advisorModel = "claude-opus-5-5";
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--days" && args[i + 1]) {
       const parsed = Number(args[i + 1]);
       if (Number.isFinite(parsed) && parsed > 0) days = Math.floor(parsed);
       i++;
+    } else if (args[i] === "--advisor-model" && args[i + 1]) {
+      advisorModel = args[i + 1];
+      i++;
     }
   }
-  return { days };
+  return { days, advisorModel };
 }
 
 function median(values: number[]): number | null {
@@ -166,6 +178,7 @@ function queryEligibility(
   startMs: number,
   endMs: number,
   consulted: Set<string>,
+  advisorModel: string,
 ): {
   activeRootSessions: number;
   eligibleRoots: number;
@@ -180,7 +193,7 @@ function queryEligibility(
     .all()) {
     parents.set(row.id, row.parent_id);
   }
-  const stats = new Map<string, { nonFableTools: number; writes: boolean }>();
+  const stats = new Map<string, { nonAdvisorTools: number; writes: boolean }>();
   const rows = db
     .query<{ session_id: string; data: string }, [number, number]>(
       "SELECT session_id, data FROM session_message WHERE type = 'assistant' AND time_created >= ? AND time_created < ?",
@@ -194,20 +207,18 @@ function queryEligibility(
       continue;
     }
     const model = data.model || {};
-    const provider = String(
-      model.providerID || model.provider || "",
-    ).toLowerCase();
-    const id = String(model.id || model.modelID || "").toLowerCase();
-    if (provider.includes("anthropic") && id.includes("fable")) continue;
+    const id = String(model.id || model.modelID || "");
+    // Advisor-model sessions cannot consult the advisor; they are ineligible.
+    if (id && normalizeModelID(id) === normalizeModelID(advisorModel)) continue;
     let entry = stats.get(row.session_id);
     if (!entry) {
-      entry = { nonFableTools: 0, writes: false };
+      entry = { nonAdvisorTools: 0, writes: false };
       stats.set(row.session_id, entry);
     }
     for (const block of data.content || []) {
       if (!block || typeof block !== "object" || block.type !== "tool")
         continue;
-      entry.nonFableTools++;
+      entry.nonAdvisorTools++;
       const name = String(block.name || block.tool || "");
       if (["edit", "write", "patch", "apply_patch"].includes(name)) {
         entry.writes = true;
@@ -221,7 +232,7 @@ function queryEligibility(
   for (const [sessionId, entry] of stats) {
     if (parents.get(sessionId)) continue;
     activeRootSessions++;
-    if (entry.nonFableTools < 10) continue;
+    if (entry.nonAdvisorTools < 10) continue;
     eligibleRoots++;
     if (consulted.has(sessionId)) eligibleConsulted++;
     if (entry.writes) eligibleWithWrites++;
@@ -235,7 +246,7 @@ function queryEligibility(
 }
 
 async function main(): Promise<void> {
-  const { days } = parseArgs();
+  const { days, advisorModel } = parseArgs();
   const endMs = Date.now();
   const startMs = endMs - days * DAY_MS;
   const startIso = new Date(startMs).toISOString();
@@ -246,7 +257,13 @@ async function main(): Promise<void> {
   try {
     const history = queryAdvisorHistory(db, startMs, endMs);
     const consulted = sessionsWithAdvice(history.calls);
-    const eligibility = queryEligibility(db, startMs, endMs, consulted);
+    const eligibility = queryEligibility(
+      db,
+      startMs,
+      endMs,
+      consulted,
+      advisorModel,
+    );
 
     console.log(`# advisor usage — last ${days} days`);
     console.log(`Window: ${startIso} → ${endIso}\n`);
@@ -350,7 +367,9 @@ async function main(): Promise<void> {
       );
     }
 
-    console.log("\n## Eligibility coverage (proxy: ≥10 non-Fable tool calls)");
+    console.log(
+      `\n## Eligibility coverage (proxy: ≥10 non-advisor tool calls, advisor model ${advisorModel})`,
+    );
     console.log(`- Active root sessions: ${eligibility.activeRootSessions}`);
     console.log(`- Eligible sessions: ${eligibility.eligibleRoots}`);
     console.log(
