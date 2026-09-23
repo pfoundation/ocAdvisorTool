@@ -494,9 +494,10 @@ interface AdvisorMetrics {
   via: string;
   gate?: GateRecord;
   benchmarks?: BenchmarkMetricsSummary;
-  // Provider route that served the generation (`opencode` when the Anthropic
-  // fallback fired). Present only on generated responses; older rows and
-  // non-generating outcomes omit it.
+  // Provider route that served (or attempted) the generation (`opencode`
+  // when the Anthropic fallback fired). Present on generated responses and
+  // on failures past the support check; older rows and earlier outcomes
+  // omit it.
   advisorProvider?: string;
 }
 
@@ -822,6 +823,23 @@ function classifyAdvisorError(message: string): string {
   if (text.includes("no transcript")) return "no_transcript";
   if (text.includes("no session")) return "no_session";
   return "api_error";
+}
+
+// Tags a generation failure with the serving route so error rows name it.
+// Returns the same error for rethrowing; non-Error values pass through.
+function withAdvisorProvider(err: unknown, provider: string): unknown {
+  if (err instanceof Error) {
+    (err as Error & { advisorProvider?: string }).advisorProvider = provider;
+  }
+  return err;
+}
+
+function errorAdvisorProvider(err: unknown): string | undefined {
+  if (err instanceof Error) {
+    const provider = (err as { advisorProvider?: unknown }).advisorProvider;
+    if (typeof provider === "string" && provider) return provider;
+  }
+  return undefined;
 }
 
 function callerLabel(model: SessionModel | null): string | null {
@@ -1844,10 +1862,10 @@ async function callAdvisor(opts: {
 
   // Anthropic first, opencode on retry: when the configured Anthropic
   // advisor is unavailable (provider off, model missing, no connection), one
-  // attempt through the opencode gateway keeps consultations working. Any
-  // other failure — including a failed fallback — reports the primary reason
-  // so the caller sees why the configured route did not work. Gate evidence
-  // was built from the primary config; the anthropic/ and opencode/ bindings
+  // attempt through the opencode gateway keeps consultations working. A
+  // failed fallback reports both reasons with the primary first, so error
+  // classification still matches the configured route. Gate evidence was
+  // built from the primary config; the anthropic/ and opencode/ bindings
   // point at the same Artificial Analysis records, so the scores still apply.
   let activeConfig = config;
   let support = await checkAdvisorSupport(runtime, config, opts.effort);
@@ -1855,18 +1873,36 @@ async function callAdvisor(opts: {
     !support.supported &&
     config.provider.toLowerCase() === ADVISOR_PROVIDER
   ) {
+    const primaryReason = support.reason;
     const fallbackConfig = { ...config, provider: ADVISOR_FALLBACK_PROVIDER };
-    const fallback = await checkAdvisorSupport(
-      runtime,
-      fallbackConfig,
-      opts.effort,
-    );
+    let fallback: AdvisorSupport;
+    try {
+      fallback = await checkAdvisorSupport(
+        runtime,
+        fallbackConfig,
+        opts.effort,
+      );
+    } catch (err) {
+      fallback = {
+        supported: false,
+        reason: `fallback check failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
     if (fallback.supported) {
       console.log(
-        `[advisor] anthropic route unavailable (${support.reason}); using ${fallbackConfig.provider}/${fallbackConfig.model}`,
+        `[advisor] anthropic route unavailable (${primaryReason}); using ${fallbackConfig.provider}/${fallbackConfig.model}`,
       );
       activeConfig = fallbackConfig;
       support = fallback;
+    } else {
+      console.log(
+        `[advisor] anthropic route unavailable (${primaryReason}); fallback ${fallbackConfig.provider} also failed (${fallback.reason})`,
+      );
+      const combined: AdvisorSupport = {
+        supported: false,
+        reason: `${primaryReason} (fallback ${fallbackConfig.provider}: ${fallback.reason})`,
+      };
+      support = combined;
     }
   }
   if (!support.supported) {
@@ -1882,45 +1918,51 @@ async function callAdvisor(opts: {
   const generate = runtime.session.generate.bind(runtime.session);
   // The timeout wraps only the generation, not the time spent waiting in the
   // queue behind other advisor calls — otherwise a backlog guarantees timeouts.
-  const text = await enqueueAdvisor(() =>
-    withTimeout(
-      (async () => {
-        const sessionId = await ensureAdvisorSession(
-          runtime,
-          support.variant,
-          activeConfig,
-        );
-        const request = { sessionID: sessionId, prompt };
-        const startedAt = Date.now();
-        const run = async () => {
-          const result = opts.signal
-            ? await generate(request, { signal: opts.signal })
-            : await generate(request);
-          return extractGeneratedText(result);
-        };
-        // A generation can come back without text (transient provider
-        // behavior, e.g. a reasoning-only response with adaptive thinking).
-        // Retry once while most of the timeout budget remains; never retry
-        // after a caller cancellation.
-        let output = await run();
-        if (!output?.trim() && !opts.signal?.aborted) {
-          const elapsed = Date.now() - startedAt;
-          if (elapsed < activeConfig.timeoutMs / 2) {
-            console.log(
-              `[advisor] empty generation; retrying once (session=${sessionId} elapsedMs=${elapsed})`,
-            );
-            output = await run();
+  // Failures past this point carry the serving route so error rows name it.
+  let text: string;
+  try {
+    text = await enqueueAdvisor(() =>
+      withTimeout(
+        (async () => {
+          const sessionId = await ensureAdvisorSession(
+            runtime,
+            support.variant,
+            activeConfig,
+          );
+          const request = { sessionID: sessionId, prompt };
+          const startedAt = Date.now();
+          const run = async () => {
+            const result = opts.signal
+              ? await generate(request, { signal: opts.signal })
+              : await generate(request);
+            return extractGeneratedText(result);
+          };
+          // A generation can come back without text (transient provider
+          // behavior, e.g. a reasoning-only response with adaptive thinking).
+          // Retry once while most of the timeout budget remains; never retry
+          // after a caller cancellation.
+          let output = await run();
+          if (!output?.trim() && !opts.signal?.aborted) {
+            const elapsed = Date.now() - startedAt;
+            if (elapsed < activeConfig.timeoutMs / 2) {
+              console.log(
+                `[advisor] empty generation; retrying once (session=${sessionId} elapsedMs=${elapsed})`,
+              );
+              output = await run();
+            }
           }
-        }
-        if (!output?.trim()) {
-          throw new Error("Advisor returned an empty response.");
-        }
-        return output;
-      })(),
-      activeConfig.timeoutMs,
-      "Advisor generation",
-    ),
-  );
+          if (!output?.trim()) {
+            throw new Error("Advisor returned an empty response.");
+          }
+          return output;
+        })(),
+        activeConfig.timeoutMs,
+        "Advisor generation",
+      ),
+    );
+  } catch (err) {
+    throw withAdvisorProvider(err, activeConfig.provider);
+  }
 
   const modelLabel = support.variant
     ? `${activeConfig.provider}/${activeConfig.model} (effort=${support.variant})`
@@ -2379,6 +2421,7 @@ async function runAdvisor(opts: {
           benchmarkLoaded,
           effectiveEffort ?? requestedEffort ?? null,
         ),
+        advisorProvider: errorAdvisorProvider(err),
       });
       console.log(
         `[advisor] session=${sessionId} mode=${mode} trigger=${trigger} outcome=error errorType=${errorType} latencyMs=${latencyMs}`,
