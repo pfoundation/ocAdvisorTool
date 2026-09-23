@@ -118,8 +118,6 @@ describe("packaged benchmark data", () => {
   });
 
   test("ships a validated seed snapshot when one exists", async () => {
-    // The genuine seed is still blocked on API access (see T11.2); this
-    // validates it once the seed file lands.
     const path = join(DIST_DATA, "artificialAnalysis.snapshot.json");
     if (!(await Bun.file(path).exists())) return;
     const { parseBenchmarkSnapshot } = await import("./benchmarkTypes");

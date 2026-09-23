@@ -5,15 +5,19 @@
 // call now carries:
 //
 // - `generation`: what the plugin recorded — a generated advisor response, a
-//   Fable/model/TypeSafe skip notice, or a real failure. "unknown" means the
+//   self/model/TypeSafe skip notice, or a real failure. "unknown" means the
 //   tool completed without visible output.
 // - `caller`: what the tool entry recorded. An `error` entry can still have
 //   produced advice (for example the caller was interrupted while the plugin
 //   generated), so the two views stay separate instead of being summed.
+//
+// `skipped_fable` is legacy: the self-consultation guard used to be keyed to
+// Fable and emitted that notice. Current rows use `skipped_self`.
 import { Database } from "bun:sqlite";
 
 export type AdvisorGeneration =
   | "advisor_response"
+  | "skipped_self"
   | "skipped_fable"
   | "skipped_model"
   | "skipped_typesafe"
@@ -51,6 +55,14 @@ export function isDisabledNotice(output: string): boolean {
   return (
     output.startsWith("advisor is disabled") ||
     output.startsWith("ocAdvisor is disabled")
+  );
+}
+
+// Current self-consultation notice; checked before the legacy disabled
+// notice below so new rows classify as `skipped_self`.
+export function isSelfConsultNotice(output: string): boolean {
+  return output.startsWith(
+    "advisor is disabled: the current model is already the advisor model",
   );
 }
 
@@ -95,6 +107,7 @@ function generationFrom(
   }
   if (!hadOutput || !output.trim()) return "unknown";
   if (isModelOptOutNotice(output)) return "skipped_model";
+  if (isSelfConsultNotice(output)) return "skipped_self";
   if (isDisabledNotice(output)) return "skipped_fable";
   if (isSkipNotice(output)) return "skipped_typesafe";
   if (isFailureFooter(output)) return "error";
@@ -243,6 +256,7 @@ function rank(record: AdvisorCallRecord): number {
   if (record.hadOutput) score += 4;
   if (record.generation === "advisor_response") score += 2;
   if (
+    record.generation === "skipped_self" ||
     record.generation === "skipped_fable" ||
     record.generation === "skipped_model" ||
     record.generation === "skipped_typesafe"

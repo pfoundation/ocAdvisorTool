@@ -20,7 +20,7 @@ import {
   advisorDisabledReason,
   inferTrigger,
   isAdvisorToolName,
-  isFableModel,
+  isAdvisorModel,
   isProviderUsable,
   parseModelRef,
   resolveAdvisorConfig,
@@ -34,30 +34,84 @@ import {
 import type { AdvisorConfig, V2PluginContext } from "./ocAdvisor";
 import type { AdvisorProfile, RequesterProfile } from "./modelProfiles";
 
-describe("isFableModel", () => {
-  test("detects anthropic fable models", () => {
+describe("isAdvisorModel", () => {
+  test("matches the configured advisor model on any route or effort", () => {
     expect(
-      isFableModel({ providerID: "anthropic", id: "claude-fable-5-1" }),
+      isAdvisorModel(
+        { providerID: "anthropic", id: "claude-opus-5-5" },
+        DEFAULT_ADVISOR_CONFIG,
+      ),
     ).toBe(true);
     expect(
-      isFableModel({ provider: "anthropic", modelID: "claude-fable-5" }),
+      isAdvisorModel(
+        { providerID: "opencode", id: "claude-opus-5-5", variant: "low" },
+        DEFAULT_ADVISOR_CONFIG,
+      ),
+    ).toBe(true);
+    expect(
+      isAdvisorModel(
+        { provider: "anthropic", modelID: "claude-opus-5-5" },
+        DEFAULT_ADVISOR_CONFIG,
+      ),
     ).toBe(true);
   });
 
-  test("rejects non-fable models", () => {
-    expect(isFableModel({ providerID: "anthropic", id: "claude-opus-5" })).toBe(
-      false,
-    );
-    expect(isFableModel({ providerID: "xai", id: "grok-4.6" })).toBe(false);
-    expect(isFableModel({ providerID: "meta", id: "muse-spark-1.3" })).toBe(
-      false,
-    );
+  test("normalizes nested routes, case, and dotted ids", () => {
+    expect(
+      isAdvisorModel(
+        { providerID: "openrouter", id: "anthropic/claude-opus-5-5" },
+        DEFAULT_ADVISOR_CONFIG,
+      ),
+    ).toBe(true);
+    expect(
+      isAdvisorModel(
+        { providerID: "anthropic", id: "Claude-Opus-5-5" },
+        DEFAULT_ADVISOR_CONFIG,
+      ),
+    ).toBe(true);
+    const dotted = {
+      ...DEFAULT_ADVISOR_CONFIG,
+      model: "deepseek-v4-1-flash",
+    };
+    expect(
+      isAdvisorModel(
+        { providerID: "vllm", id: "deepseek-ai/DeepSeek-V4.1-Flash" },
+        dotted,
+      ),
+    ).toBe(true);
+  });
+
+  test("rejects other models", () => {
+    expect(
+      isAdvisorModel(
+        { providerID: "anthropic", id: "claude-opus-5" },
+        DEFAULT_ADVISOR_CONFIG,
+      ),
+    ).toBe(false);
+    expect(
+      isAdvisorModel(
+        { providerID: "anthropic", id: "claude-fable-5-1" },
+        DEFAULT_ADVISOR_CONFIG,
+      ),
+    ).toBe(false);
+    expect(
+      isAdvisorModel(
+        { providerID: "xai", id: "grok-4.6" },
+        DEFAULT_ADVISOR_CONFIG,
+      ),
+    ).toBe(false);
+    expect(
+      isAdvisorModel(
+        { providerID: "meta", id: "muse-spark-1.3" },
+        DEFAULT_ADVISOR_CONFIG,
+      ),
+    ).toBe(false);
   });
 
   test("handles missing input", () => {
-    expect(isFableModel(null)).toBe(false);
-    expect(isFableModel(undefined)).toBe(false);
-    expect(isFableModel({})).toBe(false);
+    expect(isAdvisorModel(null, DEFAULT_ADVISOR_CONFIG)).toBe(false);
+    expect(isAdvisorModel(undefined, DEFAULT_ADVISOR_CONFIG)).toBe(false);
+    expect(isAdvisorModel({}, DEFAULT_ADVISOR_CONFIG)).toBe(false);
   });
 });
 
@@ -106,7 +160,7 @@ describe("classifyAdvisorError", () => {
 
   test("classifies OpenCode discovery failures", () => {
     expect(
-      classifyAdvisorError("Model unavailable: anthropic/claude-fable-5-1"),
+      classifyAdvisorError("Model unavailable: anthropic/claude-opus-5-5"),
     ).toBe("model_unavailable");
     expect(
       classifyAdvisorError(
@@ -124,7 +178,7 @@ describe("classifyAdvisorError", () => {
     ).toBe("invalid_effort");
     expect(
       classifyAdvisorError(
-        'Effort "xhigh" is not a variant of anthropic/claude-fable-5-1 (available: high, max).',
+        'Effort "xhigh" is not a variant of anthropic/claude-opus-5-5 (available: high, max).',
       ),
     ).toBe("invalid_effort");
   });
@@ -172,20 +226,20 @@ describe("support helpers", () => {
   });
 
   test("findAdvisorModel matches the advisor model", () => {
-    const fable = {
+    const advisor = {
       providerID: "anthropic",
-      id: "claude-fable-5-1",
+      id: "claude-opus-5-5",
       enabled: true,
     };
     expect(
-      findAdvisorModel([{ providerID: "xai", id: "grok-4.6" }, fable]),
-    ).toBe(fable);
+      findAdvisorModel([{ providerID: "xai", id: "grok-4.6" }, advisor]),
+    ).toBe(advisor);
     expect(
       findAdvisorModel([
-        { providerID: "anthropic", modelID: "claude-fable-5-1" },
+        { providerID: "anthropic", modelID: "claude-opus-5-5" },
       ]),
     ).not.toBeNull();
-    expect(findAdvisorModel([{ ...fable, enabled: false }])).toBeNull();
+    expect(findAdvisorModel([{ ...advisor, enabled: false }])).toBeNull();
     expect(findAdvisorModel([])).toBeNull();
     expect(findAdvisorModel(null)).toBeNull();
   });
@@ -224,7 +278,7 @@ describe("support helpers", () => {
         "xhigh",
       ),
     ).toThrow(
-      'Effort "xhigh" is not a variant of anthropic/claude-fable-5-1 (available: max).',
+      'Effort "xhigh" is not a variant of anthropic/claude-opus-5-5 (available: max).',
     );
   });
 
@@ -262,16 +316,16 @@ describe("support helpers", () => {
 });
 
 describe("checkAdvisorSupport", () => {
-  const fableModel = {
+  const advisorModel = {
     providerID: "anthropic",
-    id: "claude-fable-5-1",
+    id: "claude-opus-5-5",
     enabled: true,
     variants: [{ id: "xhigh" }],
   };
   const healthy = (): V2PluginContext => ({
     catalog: {
       provider: { get: async () => ({ data: { activation: "enabled" } }) },
-      model: { list: async () => ({ data: [fableModel] }) },
+      model: { list: async () => ({ data: [advisorModel] }) },
     },
     integration: {
       connection: { active: async () => ({ type: "credential", id: "c1" }) },
@@ -300,7 +354,7 @@ describe("checkAdvisorSupport", () => {
     const result = await checkAdvisorSupport(runtime);
     expect(result).toEqual({
       supported: false,
-      reason: "Model unavailable: anthropic/claude-fable-5-1",
+      reason: "Model unavailable: anthropic/claude-opus-5-5",
     });
   });
 
@@ -325,7 +379,7 @@ describe("checkAdvisorSupport", () => {
         model: {
           list: async () => ({
             data: [
-              { ...fableModel, variants: [{ id: "high" }, { id: "max" }] },
+              { ...advisorModel, variants: [{ id: "high" }, { id: "max" }] },
             ],
           }),
         },
@@ -344,16 +398,16 @@ describe("checkAdvisorSupport", () => {
     expect(result).toEqual({
       supported: false,
       reason:
-        'Effort "max" is not a variant of anthropic/claude-fable-5-1 (available: xhigh).',
+        'Effort "max" is not a variant of anthropic/claude-opus-5-5 (available: xhigh).',
     });
   });
 });
 
 describe("ensureAdvisorSession", () => {
-  const fableSession = {
+  const advisorSession = {
     id: "ses_advisor1",
     title: "advisor",
-    model: { providerID: "anthropic", id: "claude-fable-5-1" },
+    model: { providerID: "anthropic", id: "claude-opus-5-5" },
   };
 
   test("creates and pins the advisor session on first use", async () => {
@@ -387,7 +441,7 @@ describe("ensureAdvisorSession", () => {
     );
     expect(calls).toContain('create:{"title":"advisor"}');
     expect(calls).toContain(
-      'switch:{"sessionID":"ses_created1","model":{"providerID":"anthropic","id":"claude-fable-5-1","variant":"max"}}',
+      'switch:{"sessionID":"ses_created1","model":{"providerID":"anthropic","id":"claude-opus-5-5","variant":"max"}}',
     );
   });
 
@@ -395,7 +449,7 @@ describe("ensureAdvisorSession", () => {
     const calls: string[] = [];
     const runtime: V2PluginContext = {
       session: {
-        get: async () => ({ data: { ...fableSession, id: "ses_created1" } }),
+        get: async () => ({ data: { ...advisorSession, id: "ses_created1" } }),
         create: async () => {
           calls.push("create");
           return { data: { id: "ses_other" } };
@@ -419,7 +473,7 @@ describe("ensureAdvisorSession", () => {
       session: {
         get: async () => ({
           data: {
-            ...fableSession,
+            ...advisorSession,
             model: { providerID: "xai", id: "grok-4.6" },
           },
         }),
@@ -433,7 +487,7 @@ describe("ensureAdvisorSession", () => {
       "ses_advisor1",
     );
     expect(calls).toEqual([
-      'switch:{"sessionID":"ses_advisor1","model":{"providerID":"anthropic","id":"claude-fable-5-1"}}',
+      'switch:{"sessionID":"ses_advisor1","model":{"providerID":"anthropic","id":"claude-opus-5-5"}}',
     ]);
     resetAdvisorSessionCache();
   });
@@ -447,7 +501,7 @@ describe("ensureAdvisorSession", () => {
           throw new Error("not found");
         },
         list: async () => ({
-          data: [{ ...fableSession, title: "ocAdvisor" }],
+          data: [{ ...advisorSession, title: "ocAdvisor" }],
         }),
         create: async () => {
           calls.push("create");
@@ -473,11 +527,11 @@ describe("ensureAdvisorSession", () => {
       session: {
         get: async () => ({
           data: {
-            ...fableSession,
+            ...advisorSession,
             id: "ses_effort1",
             model: {
               providerID: "anthropic",
-              id: "claude-fable-5-1",
+              id: "claude-opus-5-5",
               variant: "max",
             },
           },
@@ -496,7 +550,7 @@ describe("ensureAdvisorSession", () => {
       "ses_effort1",
     );
     expect(calls).toEqual([
-      'switch:{"sessionID":"ses_effort1","model":{"providerID":"anthropic","id":"claude-fable-5-1","variant":"high"}}',
+      'switch:{"sessionID":"ses_effort1","model":{"providerID":"anthropic","id":"claude-opus-5-5","variant":"high"}}',
     ]);
     resetAdvisorSessionCache();
   });
@@ -506,13 +560,13 @@ describe("ensureAdvisorSession", () => {
     const calls: string[] = [];
     let reported: Record<string, string> = {
       providerID: "anthropic",
-      id: "claude-fable-5-1",
+      id: "claude-opus-5-5",
       variant: "max",
     };
     const runtime: V2PluginContext = {
       session: {
         get: async () => ({
-          data: { ...fableSession, id: "ses_effort2", model: reported },
+          data: { ...advisorSession, id: "ses_effort2", model: reported },
         }),
         switchModel: async (input: unknown) => {
           calls.push(`switch:${JSON.stringify(input)}`);
@@ -526,7 +580,7 @@ describe("ensureAdvisorSession", () => {
     );
     expect(calls).toEqual([]);
     // Payloads that omit the variant compare against the cached pin.
-    reported = { providerID: "anthropic", id: "claude-fable-5-1" };
+    reported = { providerID: "anthropic", id: "claude-opus-5-5" };
     await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
       "ses_effort2",
     );
@@ -535,7 +589,7 @@ describe("ensureAdvisorSession", () => {
       "ses_effort2",
     );
     expect(calls).toEqual([
-      'switch:{"sessionID":"ses_effort2","model":{"providerID":"anthropic","id":"claude-fable-5-1","variant":"high"}}',
+      'switch:{"sessionID":"ses_effort2","model":{"providerID":"anthropic","id":"claude-opus-5-5","variant":"high"}}',
     ]);
     resetAdvisorSessionCache();
   });
@@ -745,7 +799,7 @@ describe("context hook", () => {
     return handler;
   }
 
-  test("keeps the tool and injects a typed text system part for non-Fable models", async () => {
+  test("keeps the tool and injects a typed text system part for other models", async () => {
     const handler = await captureHook();
     const tool = { description: "x", input: {} };
     const event = {
@@ -779,10 +833,10 @@ describe("context hook", () => {
     expect(event.system).toHaveLength(1);
   });
 
-  test("hides the tool and injects nothing for Fable models", async () => {
+  test("hides the tool and injects nothing for the advisor model", async () => {
     const handler = await captureHook();
     const event = {
-      model: { providerID: "anthropic", id: "claude-fable-5-1" },
+      model: { providerID: "anthropic", id: "claude-opus-5-5" },
       tools: {
         advisor: { description: "x", input: {} },
         ocAdvisor: { description: "legacy", input: {} },
@@ -874,9 +928,9 @@ describe("context hook", () => {
 
 describe("parseModelRef", () => {
   test("splits provider/model#variant", () => {
-    expect(parseModelRef("anthropic/claude-fable-5-1#max")).toEqual({
+    expect(parseModelRef("anthropic/claude-opus-5-5#max")).toEqual({
       provider: "anthropic",
-      model: "claude-fable-5-1",
+      model: "claude-opus-5-5",
       variant: "max",
     });
   });
@@ -900,10 +954,13 @@ describe("parseModelRef", () => {
 describe("resolveAdvisorConfig", () => {
   const noEnv: Record<string, string | undefined> = {};
 
-  test("defaults to anthropic/claude-fable-5-1#xhigh", () => {
+  test("defaults to anthropic/claude-opus-5-5#xhigh", () => {
     const resolved = {
       ...DEFAULT_ADVISOR_CONFIG,
-      benchmarks: { ...DEFAULT_ADVISOR_CONFIG.benchmarks, matchAnyProvider: false },
+      benchmarks: {
+        ...DEFAULT_ADVISOR_CONFIG.benchmarks,
+        matchAnyProvider: false,
+      },
     };
     expect(resolveAdvisorConfig(undefined, noEnv)).toEqual(resolved);
     expect(resolveAdvisorConfig({}, noEnv)).toEqual(resolved);
@@ -1234,9 +1291,9 @@ describe("resolveAdvisorConfig", () => {
   });
 
   test("benchmarks.matchAnyProvider defaults to strict providers", () => {
-    expect(resolveAdvisorConfig(undefined, noEnv).benchmarks.matchAnyProvider).toBe(
-      false,
-    );
+    expect(
+      resolveAdvisorConfig(undefined, noEnv).benchmarks.matchAnyProvider,
+    ).toBe(false);
     expect(
       resolveAdvisorConfig({ benchmarks: { matchAnyProvider: false } }, noEnv)
         .benchmarks.matchAnyProvider,
@@ -1250,18 +1307,16 @@ describe("resolveAdvisorConfig", () => {
     ).toBe(true);
     for (const value of ["true", "1", "yes", "on"]) {
       expect(
-        resolveAdvisorConfig(
-          undefined,
-          { OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER: value },
-        ).benchmarks.matchAnyProvider,
+        resolveAdvisorConfig(undefined, {
+          OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER: value,
+        }).benchmarks.matchAnyProvider,
       ).toBe(true);
     }
     for (const value of ["false", "0", "no", "off", ""]) {
       expect(
-        resolveAdvisorConfig(
-          undefined,
-          { OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER: value },
-        ).benchmarks.matchAnyProvider,
+        resolveAdvisorConfig(undefined, {
+          OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER: value,
+        }).benchmarks.matchAnyProvider,
       ).toBe(false);
     }
   });
@@ -1274,10 +1329,9 @@ describe("resolveAdvisorConfig", () => {
       ),
     ).toThrow(/matchAnyProvider/);
     expect(() =>
-      resolveAdvisorConfig(
-        undefined,
-        { OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER: "sometimes" },
-      ),
+      resolveAdvisorConfig(undefined, {
+        OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER: "sometimes",
+      }),
     ).toThrow(/matchAnyProvider/);
   });
 });
@@ -1361,17 +1415,28 @@ describe("advisorDisabledReason", () => {
     ).toBeNull();
   });
 
-  test("keeps the Fable skip ahead of a configured exclusion", () => {
+  test("keeps the self skip ahead of a configured exclusion", () => {
     const listed = {
       ...DEFAULT_ADVISOR_CONFIG,
-      disabledForModels: ["anthropic/claude-fable-5-1"],
+      disabledForModels: ["anthropic/claude-opus-5-5"],
     };
     const reason = advisorDisabledReason(
-      { providerID: "anthropic", id: "claude-fable-5-1" },
+      { providerID: "anthropic", id: "claude-opus-5-5" },
       listed,
     );
-    expect(reason?.outcome).toBe("skipped_fable");
-    expect(reason?.message).toContain("already Fable");
+    expect(reason?.outcome).toBe("skipped_self");
+    expect(reason?.message).toBe(
+      "advisor is disabled: the current model is already the advisor model (anthropic/claude-opus-5-5).",
+    );
+  });
+
+  test("lets other models through, including former advisor models", () => {
+    expect(
+      advisorDisabledReason(
+        { providerID: "anthropic", id: "claude-fable-5-1" },
+        DEFAULT_ADVISOR_CONFIG,
+      ),
+    ).toBeNull();
   });
 });
 
@@ -1468,9 +1533,9 @@ describe("model helpers honor a custom config", () => {
 
   test("findAdvisorModel matches the configured model", () => {
     const opus = { providerID: "anthropic", id: "claude-opus-5" };
-    const fable = { providerID: "anthropic", id: "claude-fable-5-1" };
-    expect(findAdvisorModel([fable, opus], opusConfig)).toBe(opus);
-    expect(findAdvisorModel([fable], opusConfig)).toBeNull();
+    const other = { providerID: "anthropic", id: "claude-opus-5-5" };
+    expect(findAdvisorModel([other, opus], opusConfig)).toBe(opus);
+    expect(findAdvisorModel([other], opusConfig)).toBeNull();
   });
 
   test("resolveAdvisorVariant uses the configured variant", () => {
@@ -1489,7 +1554,7 @@ describe("model helpers honor a custom config", () => {
         provider: { get: async () => ({ data: { activation: "enabled" } }) },
         model: {
           list: async () => ({
-            data: [{ providerID: "anthropic", id: "claude-fable-5-1" }],
+            data: [{ providerID: "anthropic", id: "claude-opus-5-5" }],
           }),
         },
       },

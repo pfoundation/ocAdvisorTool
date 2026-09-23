@@ -152,7 +152,7 @@ function runtimeWith(options: {
           return [
             {
               providerID: "anthropic",
-              id: "claude-fable-5-1",
+              id: "claude-opus-5-5",
               enabled: true,
               variants: [{ id: "high" }, { id: "xhigh" }, { id: "max" }],
             },
@@ -177,7 +177,7 @@ function runtimeWith(options: {
         id: "ses_advisor_fixture",
         model: {
           providerID: "anthropic",
-          id: "claude-fable-5-1",
+          id: "claude-opus-5-5",
           variant: "xhigh",
         },
       }),
@@ -235,7 +235,7 @@ function insertChildSession(
 function baseConfig(overrides: Partial<AdvisorConfig> = {}): AdvisorConfig {
   return {
     provider: "anthropic",
-    model: "claude-fable-5-1",
+    model: "claude-opus-5-5",
     variant: "xhigh",
     timeoutMs: 5000,
     maxTranscriptChars: 0,
@@ -330,6 +330,7 @@ describe("runAdvisor with the TypeSafe gate", () => {
     expect(records[0].gate.effectiveEffort).toBe("high");
     expect(records[0].gate.effortSource).toBe("typesafe");
     expect(records[0].effort).toBe("high");
+    expect(records[0].advisorProvider).toBe("anthropic");
   });
 
   test("keeps an explicit caller effort over the gate suggestion", async () => {
@@ -502,13 +503,13 @@ describe("runAdvisor with the TypeSafe gate", () => {
     expect(text).not.toContain("gate:");
   });
 
-  test("keeps the Fable guard ahead of the gate", async () => {
+  test("keeps the self-consultation guard ahead of the gate", async () => {
     const { client, calls } = stubGate(gateResponse(0.9));
     const { runtime, generated } = runtimeWith({ gateClient: client });
-    // Point the fixture session at a Fable caller model.
+    // Point the fixture session at the configured advisor model.
     const db = new Database(dbPath);
     db.query("UPDATE session_v2 SET model = ? WHERE id = ?").run(
-      JSON.stringify({ providerID: "anthropic", id: "claude-fable-5-1" }),
+      JSON.stringify({ providerID: "anthropic", id: "claude-opus-5-5" }),
       "ses_fixture",
     );
     db.close();
@@ -519,11 +520,11 @@ describe("runAdvisor with the TypeSafe gate", () => {
       question: "Anything",
       config: baseConfig(),
     });
-    expect(text).toContain("advisor is disabled");
+    expect(text).toContain("already the advisor model");
     expect(calls.length).toBe(0);
     expect(generated.length).toBe(0);
     const records = metricRecords();
-    expect(records[0].outcome).toBe("skipped_fable");
+    expect(records[0].outcome).toBe("skipped_self");
   });
 
   test("skips configured caller models before TypeSafe or generation", async () => {
@@ -694,6 +695,115 @@ describe("runAdvisor with the TypeSafe gate", () => {
   });
 });
 
+describe("runAdvisor provider fallback", () => {
+  test("retries through opencode when the anthropic route is unavailable", async () => {
+    const { client } = stubGate(gateResponse(0.9));
+    const { runtime, generated } = runtimeWith({ gateClient: client });
+    const catalog = runtime.catalog!;
+    catalog.provider!.get = async (args: { providerID?: string }) => {
+      if (args?.providerID === "anthropic")
+        throw new Error("provider disabled");
+      return { activation: "enabled" };
+    };
+    catalog.model!.list = async () => [
+      {
+        providerID: "opencode",
+        id: "claude-opus-5-5",
+        enabled: true,
+        variants: [{ id: "xhigh" }, { id: "max" }],
+      },
+    ];
+    const switches: Array<Record<string, unknown>> = [];
+    runtime.session!.switchModel = async (args: Record<string, unknown>) => {
+      switches.push(args);
+    };
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Fallback check",
+      config: baseConfig(),
+    });
+    expect(text).toContain("advisor answer");
+    expect(text).toContain("opencode/claude-opus-5-5");
+    expect(generated.length).toBe(1);
+    expect(switches.length).toBe(1);
+    expect(switches[0]).toMatchObject({
+      model: {
+        providerID: "opencode",
+        id: "claude-opus-5-5",
+        variant: "xhigh",
+      },
+    });
+    expect(metricRecords()[0].outcome).toBe("advisor_response");
+    expect(metricRecords()[0].advisorProvider).toBe("opencode");
+  });
+
+  test("reports the primary reason when the fallback also fails", async () => {
+    const { client } = stubGate(gateResponse(0.9));
+    const { runtime, generated } = runtimeWith({ gateClient: client });
+    runtime.catalog!.model!.list = async () => [];
+    await expect(
+      runAdvisor({
+        runtime,
+        sessionId: "ses_fixture",
+        mode: "general",
+        question: "Fallback check",
+        config: baseConfig(),
+      }),
+    ).rejects.toThrow("Model unavailable: anthropic/claude-opus-5-5");
+    expect(generated.length).toBe(0);
+    expect(metricRecords()[0].outcome).toBe("error");
+    expect(metricRecords()[0].errorType).toBe("model_unavailable");
+  });
+
+  test("falls back on the V2 discovery path with effort selection on", async () => {
+    const { client } = stubGate(gateResponse(0.9));
+    const { runtime, generated } = runtimeWith({
+      gateClient: client,
+      omitCatalog: true,
+      v2ModelList: [
+        {
+          providerID: "opencode",
+          id: "claude-opus-5-5",
+          enabled: true,
+          variants: [{ id: "xhigh" }, { id: "max" }],
+        },
+      ],
+    });
+    runtime.provider = {
+      get: async (args: { providerID?: string }) => {
+        if (args?.providerID === "anthropic") {
+          throw new Error("provider disabled");
+        }
+        return { activation: "enabled" };
+      },
+    };
+    const switches: Array<Record<string, unknown>> = [];
+    runtime.session!.switchModel = async (args: Record<string, unknown>) => {
+      switches.push(args);
+    };
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Fallback check",
+      config: baseConfig(),
+    });
+    expect(text).toContain("advisor answer");
+    expect(text).toContain("opencode/claude-opus-5-5");
+    expect(generated.length).toBe(1);
+    expect(switches[0]).toMatchObject({
+      model: {
+        providerID: "opencode",
+        id: "claude-opus-5-5",
+        variant: "xhigh",
+      },
+    });
+    expect(metricRecords()[0].advisorProvider).toBe("opencode");
+  });
+});
+
 describe("runAdvisor resolves model profiles", () => {
   function insertAssistantMessage(row: {
     id: string;
@@ -842,7 +952,7 @@ describe("runAdvisor resolves model profiles", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]?.advisor).toEqual({
       providerID: "anthropic",
-      modelID: "claude-fable-5-1",
+      modelID: "claude-opus-5-5",
       policy: { kind: "pinned", effort: "max" },
     });
   });
@@ -890,8 +1000,8 @@ describe("runAdvisor resolves model profiles", () => {
 
   test("keeps guards on the session model ahead of profiles", async () => {
     setSessionModel("ses_fixture", {
-      providerID: "anthropic",
-      id: "claude-fable-9",
+      providerID: "opencode",
+      id: "claude-opus-5-5",
     });
     insertAssistantMessage({
       id: "msg_other",
@@ -912,7 +1022,7 @@ describe("runAdvisor resolves model profiles", () => {
       config: baseConfig(),
     });
 
-    expect(result).toContain("already Fable");
+    expect(result).toContain("already the advisor model");
     expect(calls).toHaveLength(0);
     expect(seen).toHaveLength(0);
   });
@@ -925,7 +1035,7 @@ describe("runAdvisor resolves model profiles", () => {
       v2ModelList: [
         {
           providerID: "anthropic",
-          id: "claude-fable-5-1",
+          id: "claude-opus-5-5",
           enabled: true,
           variants: [{ id: "high" }, { id: "max" }],
         },
@@ -959,7 +1069,7 @@ describe("runAdvisor resolves model profiles", () => {
       v2ModelList: [
         {
           providerID: "anthropic",
-          id: "claude-fable-5-1",
+          id: "claude-opus-5-5",
           enabled: true,
           variants: [{ id: "max" }],
         },
@@ -1058,7 +1168,7 @@ describe("runAdvisor benchmark evidence", () => {
           },
           ...["high", "xhigh", "max"].map((variant) => ({
             providerID: "anthropic",
-            modelID: "claude-fable-5-1",
+            modelID: "claude-opus-5-5",
             variant,
             aaModelID: "synthetic-aa-a",
             evaluatedEffort: "max",
@@ -1272,20 +1382,20 @@ describe("runAdvisor benchmark evidence", () => {
 
     setSessionModel("ses_fixture", {
       providerID: "anthropic",
-      id: "claude-fable-9",
+      id: "claude-opus-5-5",
     });
-    const fable = runtimeWith({
+    const self = runtimeWith({
       gateClient: stubGate(gateResponse(0.9)).client,
     });
-    fable.runtime.__advisorTest!.benchmarkStoreOptions = storeOptions;
-    const fableText = await runAdvisor({
-      runtime: fable.runtime,
+    self.runtime.__advisorTest!.benchmarkStoreOptions = storeOptions;
+    const selfText = await runAdvisor({
+      runtime: self.runtime,
       sessionId: "ses_fixture",
       mode: "general",
       question: "Evidence check",
       config: baseConfig(),
     });
-    expect(fableText).toContain("already Fable");
+    expect(selfText).toContain("already the advisor model");
     expect(metricRecords().every((row) => row.benchmarks === undefined)).toBe(
       true,
     );
