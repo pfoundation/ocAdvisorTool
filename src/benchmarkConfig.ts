@@ -25,19 +25,24 @@ export interface ResolvedBenchmarkPaths {
   mappingsPath: string;
 }
 
-export function defaultBenchmarkSnapshotPath(
+// The plugin's own data directory: benchmark files and the advisor session
+// location live under it.
+export function defaultAdvisorDataDir(
   env: Record<string, string | undefined> = process.env,
   homeDir: string = homedir(),
 ): string {
   const xdg = env.XDG_DATA_HOME?.trim();
   if (xdg && isAbsolute(xdg)) {
-    return join(xdg, "opencode/ocadvisor", DEFAULT_SNAPSHOT_FILENAME);
+    return join(xdg, "opencode/ocadvisor");
   }
-  return join(
-    homeDir,
-    ".local/share/opencode/ocadvisor",
-    DEFAULT_SNAPSHOT_FILENAME,
-  );
+  return join(homeDir, ".local/share/opencode/ocadvisor");
+}
+
+export function defaultBenchmarkSnapshotPath(
+  env: Record<string, string | undefined> = process.env,
+  homeDir: string = homedir(),
+): string {
+  return join(defaultAdvisorDataDir(env, homeDir), DEFAULT_SNAPSHOT_FILENAME);
 }
 
 function selectAbsolutePath(

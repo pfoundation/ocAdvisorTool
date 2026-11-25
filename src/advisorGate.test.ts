@@ -138,6 +138,7 @@ function runtimeWith(options: {
       gateEnv: options.gateEnv ?? {},
       dbPath,
       metricsPath,
+      sessionDirectory: join(dir, "advisor-session"),
     },
     catalog: {
       provider: {
@@ -434,6 +435,52 @@ describe("runAdvisor with the TypeSafe gate", () => {
     expect(calls).toBe(2);
     const records = metricRecords();
     expect(records[0].outcome).toBe("error");
+  });
+
+  test("repairs the session and retries once when its directory vanished", async () => {
+    let calls = 0;
+    const { runtime } = runtimeWith({
+      gateClient: stubGate(gateResponse(0.9)).client,
+      generate: async () => {
+        calls++;
+        if (calls === 1) {
+          throw new Error(
+            "Directory not found: /home/u/.local/share/opencode/worktree/x",
+          );
+        }
+        return { text: "advisor answer" };
+      },
+    });
+    const text = await runAdvisor({
+      runtime,
+      sessionId: "ses_fixture",
+      mode: "general",
+      question: "Anything",
+      config: baseConfig(),
+    });
+    expect(calls).toBe(2);
+    expect(text).toContain("advisor answer");
+  });
+
+  test("does not retry other generation failures", async () => {
+    let calls = 0;
+    const { runtime } = runtimeWith({
+      gateClient: stubGate(gateResponse(0.9)).client,
+      generate: async () => {
+        calls++;
+        throw new Error("rate limited");
+      },
+    });
+    await expect(
+      runAdvisor({
+        runtime,
+        sessionId: "ses_fixture",
+        mode: "general",
+        question: "Anything",
+        config: baseConfig(),
+      }),
+    ).rejects.toThrow(/rate limited/);
+    expect(calls).toBe(1);
   });
 
   test("shows the gate decision in the advisor footer", async () => {

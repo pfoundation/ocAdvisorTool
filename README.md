@@ -498,6 +498,20 @@ The equivalent environment variable is
   accepts the pre-rename `ocAdvisor` session title. When the agent requests
   a different effort, the session is re-pinned to that variant first
   (a no-op when it already matches).
+- The advisor session is created in a directory the plugin owns
+  (`~/.local/share/opencode/ocadvisor/session`, or under `$XDG_DATA_HOME`),
+  not in the caller's location. Generation runs in the session's directory
+  and fails once it is gone, so a reused session whose directory no longer
+  exists (for example a removed worktree) is moved there first with
+  `session.move`, and a generation that still hits a missing directory is
+  retried once after that repair. A session in any other directory, or one
+  that cannot be moved, is replaced by a fresh advisor session.
+- The advisor session denies every tool (`permissions: [{ action: "*",
+  resource: "*", effect: "deny" }]`, applied on creation and to reused
+  sessions). Generation returns text only, so a tool call used to surface as
+  "Advisor returned an empty response"; denial also keeps the tool
+  definitions (about 37k tokens) out of every consultation. The prompt says
+  tools are unavailable as a second layer.
 - The generation timeout wraps only the model call, not the time a call
   spends queued behind another consultation. Oversized transcripts are
   capped to the configured `maxTranscriptChars` (keeping the recent tail)

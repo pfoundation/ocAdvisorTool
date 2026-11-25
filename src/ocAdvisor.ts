@@ -1,9 +1,13 @@
 import { Database } from "bun:sqlite";
+import { mkdirSync, realpathSync, statSync } from "fs";
 import { appendFile } from "fs/promises";
 import { homedir } from "os";
-import { isAbsolute, join } from "path";
+import { isAbsolute, join, resolve } from "path";
 import type { BenchmarkPathOptions } from "./benchmarkConfig.js";
-import { resolveBenchmarkPaths } from "./benchmarkConfig.js";
+import {
+  defaultAdvisorDataDir,
+  resolveBenchmarkPaths,
+} from "./benchmarkConfig.js";
 import {
   buildBenchmarkEvidence,
   type EvidenceBenchmarks,
@@ -397,7 +401,8 @@ function resolveAdvisorConfig(
 }
 
 const SYSTEM_BASE = `You are a senior advisor reviewing a coding agent's work. You have the full session transcript.
-Respond in 500-750 words with structured analysis and enumerated steps. Be direct and actionable.`;
+Respond in 500-750 words with structured analysis and enumerated steps. Be direct and actionable.
+You cannot call tools: answer in plain text from this prompt alone, and name what the agent should check when the transcript does not show it.`;
 
 const SYSTEM_PROMPTS: Record<string, string> = {
   general: `${SYSTEM_BASE}
@@ -617,6 +622,8 @@ interface V2PluginContext {
     get?: Function;
     list?: Function;
     switchModel?: Function;
+    move?: Function;
+    update?: Function;
     generate?: Function;
   };
   catalog?: {
@@ -638,6 +645,7 @@ interface V2PluginContext {
     gateFetch?: typeof fetch;
     dbPath?: string;
     metricsPath?: string;
+    sessionDirectory?: string;
     profileSink?: (profiles: {
       requester: RequesterProfile;
       advisor: AdvisorProfile;
@@ -1636,11 +1644,14 @@ let cachedAdvisorSessionId: string | null = null;
 let cachedAdvisorVariant: string | undefined;
 let cachedAdvisorVariantKnown = false;
 let advisorQueue: Promise<unknown> = Promise.resolve();
+// Sessions this process already denied tools on.
+const advisorPermissionsApplied = new Set<string>();
 
 function resetAdvisorSessionCache(): void {
   cachedAdvisorSessionId = null;
   cachedAdvisorVariant = undefined;
   cachedAdvisorVariantKnown = false;
+  advisorPermissionsApplied.clear();
 }
 
 function enqueueAdvisor<T>(task: () => Promise<T>): Promise<T> {
@@ -1778,62 +1789,218 @@ async function switchAdvisorSessionModel(
   await runtime.session.switchModel({ sessionID: sessionId, model });
 }
 
+// The shared advisor session lives in a directory the plugin owns. A session
+// created without a location inherits the caller's directory, and every
+// generation fails once that directory is gone (a removed worktree broke all
+// consultations until the session was moved).
+function prepareAdvisorSessionDirectory(runtime: V2PluginContext): string {
+  const directory =
+    runtime.__advisorTest?.sessionDirectory ??
+    join(defaultAdvisorDataDir(), "session");
+  try {
+    mkdirSync(directory, { recursive: true });
+  } catch (err) {
+    throw new Error(
+      `Could not prepare the advisor session directory ${directory}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return directory;
+}
+
+function sessionLocationDirectory(
+  session: Record<string, unknown>,
+): string | null {
+  const location = session.location as { directory?: unknown } | undefined;
+  if (
+    location &&
+    typeof location === "object" &&
+    typeof location.directory === "string" &&
+    location.directory
+  ) {
+    return location.directory;
+  }
+  return typeof session.directory === "string" && session.directory
+    ? session.directory
+    : null;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isMissingDirectoryError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /directory not found|directorynotfound|location not found/i.test(
+    message,
+  );
+}
+
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+// Returns the session ready for generation, or null when it cannot be used.
+// Only a session in the plugin-owned directory is reused as is. One whose
+// directory is gone is moved there (the server applies that immediately);
+// one in another live project is replaced instead, because moving it would
+// queue the move and wake that session. Payloads without a location are
+// trusted. `repair` is off for sessions found only by title: those may be
+// someone else's, so they are adopted only when already in the plugin
+// directory and never moved.
+async function usableAdvisorSession(
+  runtime: V2PluginContext,
+  sessionId: string,
+  session: Record<string, unknown>,
+  repair = true,
+): Promise<Record<string, unknown> | null> {
+  const directory = sessionLocationDirectory(session);
+  if (!directory) return session;
+  const target = prepareAdvisorSessionDirectory(runtime);
+  if (canonicalPath(directory) === canonicalPath(target)) return session;
+  if (!repair || isDirectory(directory)) return null;
+  if (typeof runtime.session?.move !== "function") return null;
+  try {
+    await runtime.session.move({ sessionID: sessionId, directory: target });
+  } catch (err) {
+    console.log(
+      `[advisor] could not move session ${sessionId} out of missing ${directory}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+  const moved = await getAdvisorSession(runtime, sessionId);
+  if (!moved) return null;
+  const movedDirectory = sessionLocationDirectory(moved);
+  if (
+    movedDirectory &&
+    canonicalPath(movedDirectory) !== canonicalPath(target)
+  ) {
+    return null;
+  }
+  console.log(
+    `[advisor] moved session ${sessionId} from missing ${directory} to ${target}`,
+  );
+  return moved;
+}
+
+// Consultations are text-only. Generation returns only text, so a tool call
+// came back as an empty response. Denying every tool also drops the tool
+// definitions (about 37k tokens) from each request.
+const ADVISOR_SESSION_PERMISSIONS = [
+  { action: "*", resource: "*", effect: "deny" },
+];
+
+function hasAdvisorPermissions(session: Record<string, unknown>): boolean {
+  const rules = session.permissions;
+  if (!Array.isArray(rules) || rules.length !== 1) return false;
+  const rule = rules[0] as Record<string, unknown> | null;
+  return (
+    !!rule &&
+    rule.action === "*" &&
+    rule.resource === "*" &&
+    rule.effect === "deny"
+  );
+}
+
+async function ensureAdvisorPermissions(
+  runtime: V2PluginContext,
+  sessionId: string,
+  session: Record<string, unknown>,
+): Promise<void> {
+  if (hasAdvisorPermissions(session)) return;
+  // A runtime whose payload never reports permissions would otherwise get
+  // the same update on every consultation.
+  if (advisorPermissionsApplied.has(sessionId)) return;
+  if (typeof runtime.session?.update !== "function") return;
+  try {
+    await runtime.session.update({
+      sessionID: sessionId,
+      permissions: ADVISOR_SESSION_PERMISSIONS,
+    });
+    advisorPermissionsApplied.add(sessionId);
+  } catch (err) {
+    // The prompt also says tools are unavailable; a failed update must not
+    // block the consultation.
+    console.log(
+      `[advisor] could not deny tools on session ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+async function adoptAdvisorSession(
+  runtime: V2PluginContext,
+  sessionId: string,
+  session: Record<string, unknown>,
+  variant: string | undefined,
+  config: AdvisorConfig,
+): Promise<void> {
+  await ensureAdvisorPermissions(runtime, sessionId, session);
+  if (
+    advisorSessionNeedsModel(
+      session,
+      variant,
+      sessionId === cachedAdvisorSessionId,
+      config,
+    )
+  ) {
+    await switchAdvisorSessionModel(runtime, sessionId, variant, config);
+    cachedAdvisorVariant = variant;
+    cachedAdvisorVariantKnown = true;
+  } else {
+    syncCachedAdvisorVariant(session);
+  }
+  cachedAdvisorSessionId = sessionId;
+}
+
 async function ensureAdvisorSession(
   runtime: V2PluginContext,
   variant: string | undefined,
   config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
 ): Promise<string> {
+  const tried = new Set<string>();
   const candidates: Array<string | null> = [
     cachedAdvisorSessionId,
     await readStoredAdvisorSessionId(runtime),
   ];
   for (const candidate of candidates) {
-    if (!candidate) continue;
+    if (!candidate || tried.has(candidate)) continue;
+    tried.add(candidate);
     const session = await getAdvisorSession(runtime, candidate);
     if (!session) continue;
-    if (
-      advisorSessionNeedsModel(
-        session,
-        variant,
-        candidate === cachedAdvisorSessionId,
-        config,
-      )
-    ) {
-      await switchAdvisorSessionModel(runtime, candidate, variant, config);
-      cachedAdvisorVariant = variant;
-      cachedAdvisorVariantKnown = true;
-    } else {
-      syncCachedAdvisorVariant(session);
-    }
-    cachedAdvisorSessionId = candidate;
+    const usable = await usableAdvisorSession(runtime, candidate, session);
+    if (!usable) continue;
+    await adoptAdvisorSession(runtime, candidate, usable, variant, config);
     return candidate;
   }
 
   if (typeof runtime.session?.list === "function") {
     try {
       const sessions = readSessionList(await runtime.session.list());
-      const existing = sessions.find(
-        (session) =>
-          session.title === ADVISOR_SESSION_TITLE ||
-          session.title === LEGACY_ADVISOR_SESSION_TITLE,
-      );
-      const existingId = typeof existing?.id === "string" ? existing.id : null;
-      if (existing && existingId) {
+      for (const existing of sessions) {
         if (
-          advisorSessionNeedsModel(
-            existing,
-            variant,
-            existingId === cachedAdvisorSessionId,
-            config,
-          )
+          existing.title !== ADVISOR_SESSION_TITLE &&
+          existing.title !== LEGACY_ADVISOR_SESSION_TITLE
         ) {
-          await switchAdvisorSessionModel(runtime, existingId, variant, config);
-          cachedAdvisorVariant = variant;
-          cachedAdvisorVariantKnown = true;
-        } else {
-          syncCachedAdvisorVariant(existing);
+          continue;
         }
-        cachedAdvisorSessionId = existingId;
+        const existingId = typeof existing.id === "string" ? existing.id : null;
+        if (!existingId || tried.has(existingId)) continue;
+        tried.add(existingId);
+        const usable = await usableAdvisorSession(
+          runtime,
+          existingId,
+          existing,
+          false,
+        );
+        if (!usable) continue;
+        await adoptAdvisorSession(runtime, existingId, usable, variant, config);
         await storeAdvisorSessionId(runtime, existingId);
         return existingId;
       }
@@ -1847,6 +2014,8 @@ async function ensureAdvisorSession(
   }
   const created = await runtime.session.create({
     title: ADVISOR_SESSION_TITLE,
+    location: { directory: prepareAdvisorSessionDirectory(runtime) },
+    permissions: ADVISOR_SESSION_PERMISSIONS,
   });
   const sessionId = readSessionId(created);
   if (!sessionId) {
@@ -1948,24 +2117,41 @@ async function callAdvisor(opts: {
     text = await enqueueAdvisor(() =>
       withTimeout(
         (async () => {
-          const sessionId = await ensureAdvisorSession(
+          let sessionId = await ensureAdvisorSession(
             runtime,
             support.variant,
             activeConfig,
           );
-          const request = { sessionID: sessionId, prompt };
           const startedAt = Date.now();
           const run = async () => {
+            const request = { sessionID: sessionId, prompt };
             const result = opts.signal
               ? await generate(request, { signal: opts.signal })
               : await generate(request);
             return extractGeneratedText(result);
           };
+          let output: string | null;
+          try {
+            output = await run();
+          } catch (err) {
+            // The session's directory can vanish between the location check
+            // and the generation; repair the session and try once more.
+            if (opts.signal?.aborted || !isMissingDirectoryError(err))
+              throw err;
+            console.log(
+              `[advisor] session=${sessionId} directory missing during generation; repairing and retrying once`,
+            );
+            sessionId = await ensureAdvisorSession(
+              runtime,
+              support.variant,
+              activeConfig,
+            );
+            output = await run();
+          }
           // A generation can come back without text (transient provider
           // behavior, e.g. a reasoning-only response with adaptive thinking).
           // Retry once while most of the timeout budget remains; never retry
           // after a caller cancellation.
-          let output = await run();
           if (!output?.trim() && !opts.signal?.aborted) {
             const elapsed = Date.now() - startedAt;
             if (elapsed < activeConfig.timeoutMs / 2) {
