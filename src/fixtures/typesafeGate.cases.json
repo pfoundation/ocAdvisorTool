@@ -1,6 +1,6 @@
 {
   "model": "jev-1.13.0",
-  "note": "Benchmark profiles in these cases are synthetic fixtures for evaluation only (fake model IDs and scores). They are never shipped data and never reach the plugin's real snapshot files.",
+  "note": "Benchmark profiles in these cases are synthetic fixtures for evaluation only (fake model IDs and scores). They are never shipped data and never reach the plugin's real snapshot files. Cases with liveEvidence use real requester identities resolved against the bundled seed snapshot and the default advisor (Claude Fable 5.2); they carry no fixture scores.",
   "cases": [
     {
       "id": "script-lookup",
@@ -674,6 +674,166 @@
               }
             ],
             "omitted": false
+          }
+        }
+      }
+    },
+    {
+      "id": "fable-advisor-opus-design",
+      "expectation": "proceed",
+      "why": "A strong Opus 5.5 requester still benefits from Fable 5.2 on a consequential concurrency design; missing advisor scores are not a reason to skip.",
+      "input": {
+        "mode": "plan",
+        "trigger": "before_approach",
+        "question": "Should the job queue use SELECT ... FOR UPDATE SKIP LOCKED or advisory locks to prevent double-processing when workers crash mid-job?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "Make the job queue safe when workers crash mid-job."
+        },
+        "context": {
+          "messages": [
+            "## User\nMake the job queue safe when workers crash mid-job.",
+            "## Assistant\nTwo designs fit: row locks with SKIP LOCKED and a visibility timeout, or session advisory locks. Crash recovery, lock leakage across pooled connections, and retry semantics differ between them."
+          ]
+        },
+        "history": {
+          "priorConsultations": 0,
+          "priorModes": []
+        },
+        "liveEvidence": {
+          "requester": {
+            "providerID": "anthropic",
+            "modelID": "claude-opus-5-5",
+            "variant": "xhigh"
+          }
+        }
+      }
+    },
+    {
+      "id": "fable-advisor-opus-lookup",
+      "expectation": "skip",
+      "why": "A direct config lookup needs no advisor even though the advisor is a stronger frontier model.",
+      "input": {
+        "mode": "general",
+        "trigger": "other",
+        "question": "What port does the dev server listen on?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "What port does the dev server use?"
+        },
+        "context": {
+          "messages": [
+            "## User\nWhat port does the dev server use?",
+            "## Assistant\nvite.config.ts sets server.port to 5173."
+          ]
+        },
+        "history": {
+          "priorConsultations": 0,
+          "priorModes": []
+        },
+        "liveEvidence": {
+          "requester": {
+            "providerID": "anthropic",
+            "modelID": "claude-opus-5-5",
+            "variant": "xhigh"
+          }
+        }
+      }
+    },
+    {
+      "id": "fable-advisor-opus-review",
+      "expectation": "proceed",
+      "why": "Independent pre-completion review of a destructive migration is consequential even for a strong requester.",
+      "input": {
+        "mode": "review",
+        "trigger": "pre_complete",
+        "question": "Review this migration that backfills tenant_id and then drops the legacy account_id column: is any path able to lose rows?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "Ship the tenant_id migration."
+        },
+        "context": {
+          "messages": [
+            "## User\nShip the tenant_id migration.",
+            "## Assistant\nThe migration backfills tenant_id in batches, then drops account_id in the same release. Two services still read account_id behind a feature flag that defaults to off."
+          ]
+        },
+        "history": {
+          "priorConsultations": 0,
+          "priorModes": []
+        },
+        "liveEvidence": {
+          "requester": {
+            "providerID": "anthropic",
+            "modelID": "claude-opus-5-5",
+            "variant": "xhigh"
+          }
+        }
+      }
+    },
+    {
+      "id": "fable-advisor-flash-debug",
+      "expectation": "proceed",
+      "why": "A weaker requester stuck on an intermittent failure gains from the advisor.",
+      "input": {
+        "mode": "debug",
+        "trigger": "stuck",
+        "question": "Why does the websocket reconnect loop occasionally open two sockets after a network flap, even with the reconnecting flag set?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "Fix the duplicate websocket connections."
+        },
+        "context": {
+          "messages": [
+            "## User\nFix the duplicate websocket connections.",
+            "## Assistant\nThree attempts failed: guarding with a reconnecting flag, debouncing reconnect, and clearing the timer in onclose. Logs show two onopen events about 40 ms apart after a flap."
+          ]
+        },
+        "history": {
+          "priorConsultations": 0,
+          "priorModes": []
+        },
+        "liveEvidence": {
+          "requester": {
+            "providerID": "opencode",
+            "modelID": "deepseek-v4.1-flash",
+            "variant": "max"
+          }
+        }
+      }
+    },
+    {
+      "id": "fable-advisor-flash-rename",
+      "expectation": "skip",
+      "why": "A mechanical rename needs no consultation regardless of the capability gap.",
+      "input": {
+        "mode": "general",
+        "trigger": "other",
+        "question": "Should I rename getUser to fetchUser in src/api/user.ts and its two call sites?"
+      },
+      "state": {
+        "user": {
+          "latestRequest": "Rename getUser to fetchUser."
+        },
+        "context": {
+          "messages": [
+            "## User\nRename getUser to fetchUser.",
+            "## Assistant\nrg shows the definition and two call sites; the rename is mechanical and the typecheck will confirm it."
+          ]
+        },
+        "history": {
+          "priorConsultations": 0,
+          "priorModes": []
+        },
+        "liveEvidence": {
+          "requester": {
+            "providerID": "opencode",
+            "modelID": "deepseek-v4.1-flash",
+            "variant": "max"
           }
         }
       }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fixtureState } from "./typesafeGate.eval";
+import { fixtureState, liveEvidenceState } from "./typesafeGate.eval";
 
 // The eval fixtures are synthetic: fake model IDs and scores for exercising
 // the gate's wire-format evidence path. They are never shipped data.
@@ -15,7 +15,7 @@ const file = JSON.parse(
   cases: Array<{
     id: string;
     expectation: "skip" | "proceed";
-    state: { benchmarks?: unknown };
+    state: { benchmarks?: unknown; liveEvidence?: unknown };
   }>;
 };
 
@@ -60,6 +60,26 @@ describe("gate evaluation fixtures", () => {
       ),
     ).toBe(true);
     expect(state.benchmarks?.omitted).toBe(false);
+  });
+
+  test("resolves live-evidence cases against the Fable 5.2 advisor", async () => {
+    const live = file.cases.filter((entry) => entry.state.liveEvidence);
+    expect(live.length).toBe(5);
+    expect(live.some((entry) => entry.expectation === "skip")).toBe(true);
+    expect(live.some((entry) => entry.expectation === "proceed")).toBe(true);
+    const opus = live.find(
+      (entry) => entry.id === "fable-advisor-opus-design",
+    )!;
+    const state = await liveEvidenceState(opus as never);
+    expect(state.models?.advisor.modelID).toBe("claude-fable-5-2");
+    expect(state.models?.requester.modelID).toBe("claude-opus-5-5");
+    expect(state.benchmarks?.source).toBe("seed");
+    expect(state.benchmarks?.requesterMatch.status).toBe("matched");
+    // Bound to the published record but awaiting a snapshot refresh.
+    expect(state.benchmarks?.advisorDefaultMatch.status).toBe("missing_record");
+    expect(state.benchmarks?.advisorDefaultMatch.aaModelID).toBe(
+      "76942526-cc96-46b0-bc27-29561c53ed70",
+    );
   });
 
   test("carries stale snapshot provenance", () => {

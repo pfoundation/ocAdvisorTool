@@ -59,6 +59,12 @@ export function normalizeModelID(id: string): string {
   return last.trim().toLowerCase().replace(/\./g, "-");
 }
 
+// Claude Fable models (every version, route and effort, including
+// `claude-fable-latest`) never consult the advisor.
+export function isFableModel(id: string): boolean {
+  return normalizeModelID(id).startsWith("claude-fable-");
+}
+
 function parseModelShape(value: unknown): ParsedModel | null {
   if (!value || typeof value !== "object") return null;
   const shape = value as Record<string, unknown>;

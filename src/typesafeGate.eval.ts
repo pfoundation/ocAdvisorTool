@@ -8,11 +8,17 @@
  * usage, and cost figures. Cases may carry synthetic benchmark profiles
  * (fake model IDs and scores, defined in fixtures/typesafeGate.cases.json);
  * they exercise the wire-format evidence path without touching real
- * snapshot files. Without TYPESAFE_API_KEY it reports the missing
- * prerequisite and sends no request.
+ * snapshot files. Cases with `liveEvidence` instead resolve a real requester
+ * against the bundled seed snapshot and mappings and the plugin's default
+ * advisor, so they see exactly what the production gate sees. Without
+ * TYPESAFE_API_KEY it reports the missing prerequisite and sends no request.
  */
 import { readFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
+import { buildBenchmarkEvidence } from "./benchmarkEvidence.js";
+import { createBenchmarkStore, type BenchmarkView } from "./benchmarkStore.js";
+import { DEFAULT_ADVISOR_CONFIG } from "./ocAdvisor.js";
 import { runTypeSafeGate } from "./typesafeGate.js";
 import {
   TYPESAFE_DEFAULTS,
@@ -64,6 +70,14 @@ interface EvalCase {
     context: { messages: string[] };
     history: { priorConsultations: number; priorModes: string[] };
     benchmarks?: EvalBenchmarks;
+    // Real requester identity resolved against the bundled seed data.
+    liveEvidence?: {
+      requester: {
+        providerID: string;
+        modelID: string;
+        variant: string | null;
+      };
+    };
   };
 }
 
@@ -81,6 +95,44 @@ function parseModelArg(): string | null {
     if (args[i] === "--model" && args[i + 1]) return args[i + 1];
   }
   return null;
+}
+
+let seedView: Promise<BenchmarkView> | null = null;
+
+// Reads only the bundled seed: the user snapshot path never exists.
+function bundledSeedView(): Promise<BenchmarkView> {
+  if (!seedView) {
+    const missing = join(tmpdir(), `ocadvisor-eval-${process.pid}`);
+    seedView = createBenchmarkStore({
+      snapshotPath: join(missing, "artificial-analysis.json"),
+      mappingsPath: join(missing, "model-mappings.json"),
+    }).then((store) => store.view());
+  }
+  return seedView;
+}
+
+export async function liveEvidenceState(
+  testCase: EvalCase,
+): Promise<DecisionState> {
+  const base = fixtureState(testCase);
+  const live = testCase.state.liveEvidence;
+  if (!live) return base;
+  const evidence = buildBenchmarkEvidence({
+    requester: { ...live.requester, provenance: "invocation_message" },
+    advisor: {
+      providerID: DEFAULT_ADVISOR_CONFIG.provider,
+      modelID: DEFAULT_ADVISOR_CONFIG.model,
+      policy: {
+        kind: "candidates",
+        candidates: ["high", "xhigh", "max"],
+        fallback: DEFAULT_ADVISOR_CONFIG.variant ?? null,
+      },
+    },
+    view: await bundledSeedView(),
+  });
+  base.models = evidence.models;
+  base.benchmarks = evidence.benchmarks;
+  return base;
 }
 
 export function fixtureState(testCase: EvalCase): DecisionState {
@@ -158,7 +210,7 @@ async function main(): Promise<void> {
 
   for (const testCase of file.cases) {
     const decision = await runTypeSafeGate({
-      state: fixtureState(testCase),
+      state: await liveEvidenceState(testCase),
       input: {
         mode: testCase.input.mode,
         trigger: testCase.input.trigger,

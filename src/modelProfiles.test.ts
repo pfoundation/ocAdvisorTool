@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import {
+  isFableModel,
   resolveAdvisorProfile,
   resolveRequesterProfile,
 } from "./modelProfiles";
@@ -414,5 +415,32 @@ describe("resolveAdvisorProfile", () => {
         defaultEffort: null,
       }).policy,
     ).toEqual({ kind: "fixed", effort: null });
+  });
+});
+
+describe("isFableModel", () => {
+  test("matches every Fable id on any route", () => {
+    for (const id of [
+      "claude-fable-5",
+      "claude-fable-5-1",
+      "claude-fable-5-2",
+      "anthropic/claude-fable-5.2",
+      "~anthropic/claude-fable-latest",
+      "Claude-Fable-6",
+    ]) {
+      expect(isFableModel(id)).toBe(true);
+    }
+  });
+
+  test("ignores other models and lookalikes", () => {
+    for (const id of [
+      "claude-opus-5-5",
+      "anthropic/claude-opus-5",
+      "fable-5-2",
+      "claude-fablex-1",
+      "",
+    ]) {
+      expect(isFableModel(id)).toBe(false);
+    }
   });
 });
