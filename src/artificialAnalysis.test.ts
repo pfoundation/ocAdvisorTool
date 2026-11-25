@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   AA_LLM_MODELS_ENDPOINT,
+  combineAAPages,
   normalizeAAResponse,
+  parseAAPage,
 } from "./artificialAnalysis";
 import {
   RECOGNIZED_METRICS,
@@ -67,7 +69,7 @@ function asError(value: unknown): string {
 describe("normalizeAAResponse", () => {
   test("uses the documented models endpoint", () => {
     expect(AA_LLM_MODELS_ENDPOINT).toBe(
-      "https://artificialanalysis.ai/api/v2/data/llms/models",
+      "https://artificialanalysis.ai/api/v2/language/models/free",
     );
   });
 
@@ -258,5 +260,69 @@ describe("normalizeAAResponse", () => {
     );
     expect(reordered.contentHash).toBe(first.contentHash);
     expect(reordered.fetchedAt).not.toBe(first.fetchedAt);
+  });
+});
+
+describe("creator-less entries", () => {
+  test("skips entries whose documented creator is null", () => {
+    const snapshot = asSnapshot(
+      normalizeAAResponse(
+        syntheticBody([
+          syntheticEntry(),
+          syntheticEntry({
+            id: "synthetic-aa-1003",
+            slug: "synthetic-three",
+            model_creator: null,
+          }),
+        ]),
+        FETCHED_AT,
+      ),
+    );
+    expect(snapshot.models.map((model) => model.id)).toEqual([
+      "synthetic-aa-1001",
+    ]);
+  });
+});
+
+describe("paginated responses", () => {
+  test("treats a page without pagination as final", () => {
+    const page = parseAAPage({ data: [syntheticEntry()] }, 1);
+    if ("error" in page) throw new Error(page.error);
+    expect(page.hasMore).toBe(false);
+    expect(page.intelligenceIndexVersion).toBeNull();
+  });
+
+  test("combines pages and records the index version", () => {
+    const first = parseAAPage(
+      {
+        intelligence_index_version: 5,
+        pagination: { has_more: true },
+        data: [syntheticEntry()],
+      },
+      1,
+    );
+    const second = parseAAPage(
+      {
+        intelligence_index_version: 5,
+        pagination: { has_more: false },
+        data: [
+          syntheticEntry({ id: "synthetic-aa-1002", slug: "synthetic-two" }),
+        ],
+      },
+      2,
+    );
+    if ("error" in first || "error" in second) throw new Error("bad page");
+    const body = combineAAPages([first, second]);
+    if ("error" in body) throw new Error(body.error);
+    const snapshot = asSnapshot(normalizeAAResponse(body, FETCHED_AT));
+    expect(snapshot.models).toHaveLength(2);
+    expect(snapshot.methodologyVersion).toBe(
+      "artificial_analysis_intelligence_index v5",
+    );
+    expect(verifySnapshotHash(snapshot)).toBe(true);
+  });
+
+  test("rejects a non-object page", () => {
+    expect(asError(parseAAPage([], 3))).toContain("page 3");
   });
 });

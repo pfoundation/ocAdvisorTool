@@ -451,3 +451,107 @@ describe("updateBenchmarkSnapshot", () => {
     expect(stored.fetchedAt).toBe("2026-09-20T00:00:00.000Z");
   });
 });
+
+describe("updateBenchmarkSnapshot pagination", () => {
+  function pagedFetch(pages: unknown[]): {
+    fetchImpl: typeof fetch;
+    urls: string[];
+  } {
+    const urls: string[] = [];
+    const fetchImpl = (async (url: unknown) => {
+      urls.push(String(url));
+      const page = Number(new URL(String(url)).searchParams.get("page"));
+      return new Response(JSON.stringify(pages[page - 1] ?? {}), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    return { fetchImpl, urls };
+  }
+
+  function page(ids: string[], hasMore: boolean, version: number = 5) {
+    return {
+      tier: "free",
+      intelligence_index_version: version,
+      pagination: { page: 1, page_size: 2, total_pages: 2, has_more: hasMore },
+      data: ids.map((id) => syntheticEntry(id)),
+    };
+  }
+
+  test("follows has_more across pages into one snapshot", async () => {
+    const target = join(tempDir(), "artificial-analysis.json");
+    const { fetchImpl, urls } = pagedFetch([
+      page(["synthetic-aa-1001", "synthetic-aa-1002"], true),
+      page(["synthetic-aa-1003"], false),
+    ]);
+    const result = okResult(
+      await updateBenchmarkSnapshot(target, {
+        fetchImpl,
+        apiKey: "SYNTHETIC-KEY-1",
+      }),
+    );
+    expect(result.modelCount).toBe(3);
+    expect(urls).toEqual([
+      "https://artificialanalysis.ai/api/v2/language/models/free?page=1",
+      "https://artificialanalysis.ai/api/v2/language/models/free?page=2",
+    ]);
+    const stored = parseBenchmarkSnapshot(
+      JSON.parse(readFileSync(target, "utf8")),
+    );
+    if ("error" in stored) throw new Error(stored.error);
+    expect(stored.methodologyVersion).toBe(
+      "artificial_analysis_intelligence_index v5",
+    );
+  });
+
+  test("rejects pages that disagree on the index version", async () => {
+    const target = join(tempDir(), "artificial-analysis.json");
+    const { fetchImpl } = pagedFetch([
+      page(["synthetic-aa-1001"], true, 5),
+      page(["synthetic-aa-1002"], false, 6),
+    ]);
+    const result = failResult(
+      await updateBenchmarkSnapshot(target, {
+        fetchImpl,
+        apiKey: "SYNTHETIC-KEY-1",
+      }),
+    );
+    expect(result.code).toBe("invalid_response");
+    expect(result.message).toContain("Intelligence Index versions");
+    expect(
+      readdirSync(join(target, "..")).includes("artificial-analysis.json"),
+    ).toBe(false);
+  });
+
+  test("rejects a response that never stops paginating", async () => {
+    const target = join(tempDir(), "artificial-analysis.json");
+    const endless = Array.from({ length: 60 }, (_, index) =>
+      page([`synthetic-aa-${2000 + index}`], true),
+    );
+    const { fetchImpl, urls } = pagedFetch(endless);
+    const result = failResult(
+      await updateBenchmarkSnapshot(target, {
+        fetchImpl,
+        apiKey: "SYNTHETIC-KEY-1",
+      }),
+    );
+    expect(result.code).toBe("invalid_response");
+    expect(urls).toHaveLength(50);
+  });
+
+  test("rejects a page without a data array", async () => {
+    const target = join(tempDir(), "artificial-analysis.json");
+    const { fetchImpl } = pagedFetch([
+      page(["synthetic-aa-1001"], true),
+      { tier: "free", pagination: { has_more: false } },
+    ]);
+    const result = failResult(
+      await updateBenchmarkSnapshot(target, {
+        fetchImpl,
+        apiKey: "SYNTHETIC-KEY-1",
+      }),
+    );
+    expect(result.code).toBe("invalid_response");
+    expect(result.message).toContain("page 2");
+  });
+});

@@ -1,5 +1,6 @@
-// Transactional Artificial Analysis snapshot refresh: one bounded,
-// authenticated fetch is validated, staged next to the target, and
+// Transactional Artificial Analysis snapshot refresh: a bounded,
+// authenticated paginated fetch (one deadline, per-page size limit) is
+// validated, staged next to the target, and
 // atomically renamed over it. Any failure before the rename leaves the
 // previous file byte-for-byte intact. A per-target PID lock coordinates
 // concurrent updaters; stale locks from dead processes are recovered,
@@ -15,8 +16,12 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import {
-  AA_LLM_MODELS_ENDPOINT,
+  AA_MAX_PAGES,
+  aaModelsPageURL,
+  combineAAPages,
   normalizeAAResponse,
+  parseAAPage,
+  type AAPage,
 } from "./artificialAnalysis.js";
 import {
   RECOGNIZED_METRICS,
@@ -320,38 +325,61 @@ export async function updateBenchmarkSnapshot(
   try {
     await reapStaleStaging(targetPath);
 
-    let response: Response;
-    try {
-      response = await fetchImpl(AA_LLM_MODELS_ENDPOINT, {
-        headers: { "x-api-key": apiKey },
-        signal: AbortSignal.timeout(timeoutMs),
-        redirect: "error",
-      });
-    } catch (error) {
-      const code = classifyFetchError(error);
-      return {
-        ok: false,
-        code,
-        message:
-          code === "timeout"
-            ? `Artificial Analysis request timed out after ${timeoutMs} ms.`
-            : "Artificial Analysis request failed before a response arrived.",
-      };
+    // One deadline covers every page so a slow multi-page refresh cannot
+    // exceed the documented timeout.
+    const signal = AbortSignal.timeout(timeoutMs);
+    const pages: AAPage[] = [];
+    for (let page = 1; ; page++) {
+      if (page > AA_MAX_PAGES) {
+        return {
+          ok: false,
+          code: "invalid_response",
+          message: `Artificial Analysis reported more than ${AA_MAX_PAGES} pages.`,
+        };
+      }
+      let response: Response;
+      try {
+        response = await fetchImpl(aaModelsPageURL(page), {
+          headers: { "x-api-key": apiKey },
+          signal,
+          redirect: "error",
+        });
+      } catch (error) {
+        const code = classifyFetchError(error);
+        return {
+          ok: false,
+          code,
+          message:
+            code === "timeout"
+              ? `Artificial Analysis request timed out after ${timeoutMs} ms.`
+              : "Artificial Analysis request failed before a response arrived.",
+        };
+      }
+      if (!response.ok) return httpFailure(response.status);
+
+      const text = await readBoundedBody(response, maxBytes);
+      if (typeof text !== "string") return text;
+
+      let pageBody: unknown;
+      try {
+        pageBody = JSON.parse(text);
+      } catch {
+        return {
+          ok: false,
+          code: "invalid_response",
+          message: "Artificial Analysis response was not valid JSON.",
+        };
+      }
+      const parsed = parseAAPage(pageBody, page);
+      if ("error" in parsed) {
+        return { ok: false, code: "invalid_response", message: parsed.error };
+      }
+      pages.push(parsed);
+      if (!parsed.hasMore) break;
     }
-    if (!response.ok) return httpFailure(response.status);
-
-    const text = await readBoundedBody(response, maxBytes);
-    if (typeof text !== "string") return text;
-
-    let body: unknown;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      return {
-        ok: false,
-        code: "invalid_response",
-        message: "Artificial Analysis response was not valid JSON.",
-      };
+    const body = combineAAPages(pages);
+    if ("error" in body) {
+      return { ok: false, code: "invalid_response", message: body.error };
     }
     const snapshot = normalizeAAResponse(body, fetchedAt);
     if ("error" in snapshot) {

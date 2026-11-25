@@ -3,6 +3,102 @@
   "bindings": [
     {
       "providerID": "anthropic",
+      "modelID": "claude-fable-5-2",
+      "variant": "max",
+      "aaModelID": "593f2d23-247b-41c9-a679-cebd225f0a9a",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-fable-5-2",
+      "variant": "xhigh",
+      "aaModelID": "76942526-cc96-46b0-bc27-29561c53ed70",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2-xhigh"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-fable-5-2",
+      "variant": "high",
+      "aaModelID": "fdc1913b-9497-45ef-83f7-17dae756f37e",
+      "evaluatedEffort": "high",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2-high"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-fable-5-2",
+      "variant": "medium",
+      "aaModelID": "0c9b4e05-9259-42cc-b40e-d6acbbeaa7e8",
+      "evaluatedEffort": "medium",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2-medium"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-fable-5-2",
+      "variant": "low",
+      "aaModelID": "cfc7acb1-d903-4858-9b6c-6c7776caf8f9",
+      "evaluatedEffort": "low",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2-low"
+    },
+    {
+      "providerID": "anthropic",
+      "modelID": "claude-fable-5-2",
+      "variant": null,
+      "aaModelID": "593f2d23-247b-41c9-a679-cebd225f0a9a",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-fable-5-2",
+      "variant": "max",
+      "aaModelID": "593f2d23-247b-41c9-a679-cebd225f0a9a",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-fable-5-2",
+      "variant": "xhigh",
+      "aaModelID": "76942526-cc96-46b0-bc27-29561c53ed70",
+      "evaluatedEffort": "xhigh",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2-xhigh"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-fable-5-2",
+      "variant": "high",
+      "aaModelID": "fdc1913b-9497-45ef-83f7-17dae756f37e",
+      "evaluatedEffort": "high",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2-high"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-fable-5-2",
+      "variant": "medium",
+      "aaModelID": "0c9b4e05-9259-42cc-b40e-d6acbbeaa7e8",
+      "evaluatedEffort": "medium",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2-medium"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-fable-5-2",
+      "variant": "low",
+      "aaModelID": "cfc7acb1-d903-4858-9b6c-6c7776caf8f9",
+      "evaluatedEffort": "low",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2-low"
+    },
+    {
+      "providerID": "opencode",
+      "modelID": "claude-fable-5-2",
+      "variant": null,
+      "aaModelID": "593f2d23-247b-41c9-a679-cebd225f0a9a",
+      "evaluatedEffort": "max",
+      "evidenceURL": "https://artificialanalysis.ai/models/claude-fable-5-2"
+    },
+    {
+      "providerID": "anthropic",
       "modelID": "claude-fable-5-1",
       "variant": "max",
       "aaModelID": "3e87c73e-a257-495e-9730-367a66229811",
