@@ -16,6 +16,7 @@
 // self-consultation guard was keyed to Fable. Self-consultation rows use
 // `skipped_self`.
 import { Database } from "bun:sqlite";
+import { loadToolPartsInWindow, withPartContent } from "./sessionParts.js";
 
 export type AdvisorGeneration =
   | "advisor_response"
@@ -128,6 +129,20 @@ function outputText(state: Record<string, any> | undefined): {
   return { text: joined, hadOutput: joined.trim().length > 0 };
 }
 
+function errorMessage(state: Record<string, any> | undefined): string | null {
+  const error = state?.error;
+  if (typeof error === "string" && error.trim()) return error;
+  if (
+    error &&
+    typeof error === "object" &&
+    typeof error.message === "string" &&
+    error.message.trim()
+  ) {
+    return error.message;
+  }
+  return null;
+}
+
 interface RawMatch {
   input: Record<string, any> | undefined;
   state: Record<string, any>;
@@ -182,18 +197,11 @@ export function queryAdvisorHistory(
     }
   };
 
-  const rows = db
-    .query<{ id: string; session_id: string; data: string }, [number, number]>(
-      "SELECT id, session_id, data FROM session_message WHERE type = 'assistant' AND time_created >= ? AND time_created < ? AND data LIKE '%advisor%'",
-    )
-    .all(startMs, endMs);
-  for (const row of rows) {
-    let data: Record<string, any>;
-    try {
-      data = JSON.parse(row.data);
-    } catch {
-      continue;
-    }
+  const scan = (
+    row: { id: string; session_id: string },
+    data: Record<string, any>,
+    fallbackMs: number,
+  ) => {
     for (const block of data.content || []) {
       if (!block || typeof block !== "object" || block.type !== "tool")
         continue;
@@ -207,9 +215,7 @@ export function queryAdvisorHistory(
       if (!isTerminal(state.status) && caller !== "running") continue;
       const blockTime = block.time?.ran || block.time?.created;
       const time = new Date(
-        typeof blockTime === "number"
-          ? blockTime
-          : rowTime(row.id, data, startMs),
+        typeof blockTime === "number" ? blockTime : fallbackMs,
       ).toISOString();
       matches.forEach((match, index) => {
         const callId = String(
@@ -220,6 +226,11 @@ export function queryAdvisorHistory(
         const direct = outputText(state);
         const output = match.outputText ?? direct.text;
         const hadOutput = direct.hadOutput || !!match.outputText;
+        // A thrown advisor failure leaves no output, only the error.
+        const generation =
+          !hadOutput && errorMessage(match.state)
+            ? "error"
+            : generationFrom(match.state.status, output, hadOutput);
         consider({
           callId,
           sessionId: row.session_id,
@@ -229,12 +240,52 @@ export function queryAdvisorHistory(
             typeof match.input?.question === "string"
               ? match.input.question.length
               : 0,
-          generation: generationFrom(match.state.status, output, hadOutput),
+          generation,
           caller,
           hadOutput,
         });
       });
     }
+  };
+
+  // Inline content (before OpenCode 2.4). Rows without a block time fall
+  // back to the window start, the safest lower bound.
+  const rows = db
+    .query<{ id: string; session_id: string; data: string }, [number, number]>(
+      "SELECT id, session_id, data FROM session_message WHERE type = 'assistant' AND time_created >= ? AND time_created < ? AND data LIKE '%advisor%'",
+    )
+    .all(startMs, endMs);
+  for (const row of rows) {
+    const data = parseJson(row.data);
+    if (data) scan(row, data, startMs);
+  }
+
+  // OpenCode 2.4+ keeps tool blocks in session_part; the message's own
+  // creation time stands in for a block time.
+  const parts = loadToolPartsInWindow(db, startMs, endMs, "advisor");
+  const message =
+    parts.size > 0
+      ? db.query<
+          {
+            id: string;
+            session_id: string;
+            data: string;
+            time_created: number;
+          },
+          [string]
+        >(
+          "SELECT id, session_id, data, time_created FROM session_message WHERE id = ?",
+        )
+      : null;
+  for (const [messageId, blocks] of parts) {
+    const row = message?.get(messageId);
+    const data = row ? parseJson(row.data) : null;
+    if (!row || !data) continue;
+    scan(
+      row,
+      withPartContent(data, blocks),
+      typeof row.time_created === "number" ? row.time_created : startMs,
+    );
   }
 
   const sorted = [...calls.values()].sort((a, b) =>
@@ -243,14 +294,13 @@ export function queryAdvisorHistory(
   return { calls: sorted, distinctSessions };
 }
 
-// Message rows do not always carry a usable block time; the window start is
-// the safest lower bound.
-function rowTime(
-  _id: string,
-  _data: Record<string, any>,
-  startMs: number,
-): number {
-  return startMs;
+function parseJson(raw: string): Record<string, any> | null {
+  try {
+    const value = JSON.parse(raw);
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function rank(record: AdvisorCallRecord): number {

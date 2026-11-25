@@ -28,6 +28,7 @@ import {
   type AdvisorProfile,
   type RequesterProfile,
 } from "./modelProfiles.js";
+import { loadSessionParts, withPartContent } from "./sessionParts.js";
 import {
   runTypeSafeGate,
   type GateClient,
@@ -595,6 +596,7 @@ interface PartRow {
 }
 
 interface SessionMessageRow {
+  id?: string;
   type: string;
   data: string;
 }
@@ -963,10 +965,11 @@ function countPriorAdvisorCalls(
             "SELECT id, data FROM session_message WHERE session_id = ? AND type = 'assistant'",
           )
           .all(sid);
+        const parts = loadSessionParts(db, sid, { toolsOnly: true });
         for (const row of rows) {
           let data: Record<string, any>;
           try {
-            data = JSON.parse(row.data);
+            data = withPartContent(JSON.parse(row.data), parts.get(row.id));
           } catch {
             continue;
           }
@@ -1156,7 +1159,7 @@ function getSessionMessages(
 ): SessionMessageRow[] {
   return db
     .query<SessionMessageRow, [string]>(
-      "SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq ASC",
+      "SELECT * FROM session_message WHERE session_id = ? ORDER BY seq ASC",
     )
     .all(sessionId);
 }
@@ -1167,6 +1170,22 @@ function truncate(value: string, max: number): string {
 
 function stringifyUnknown(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+// OpenCode 2.4 records tool output as content blocks; join their text instead
+// of serializing the array.
+function toolOutputText(output: unknown): string | null {
+  if (!output) return null;
+  if (Array.isArray(output)) {
+    const texts = output.map((block) =>
+      block && typeof block === "object" && typeof block.text === "string"
+        ? block.text
+        : stringifyUnknown(block),
+    );
+    const joined = texts.join("\n");
+    return joined.trim() ? joined : null;
+  }
+  return stringifyUnknown(output);
 }
 
 function formatPartContent(part: Record<string, any>): string | null {
@@ -1182,11 +1201,14 @@ function formatPartContent(part: Record<string, any>): string | null {
           `Input: ${truncate(stringifyUnknown(part.state.input), 2000)}`,
         );
       }
-      const output = part.state?.output ?? part.state?.content;
-      if (output) {
-        lines.push(`Output: ${truncate(stringifyUnknown(output), 3000)}`);
+      const output = toolOutputText(part.state?.output ?? part.state?.content);
+      if (output) lines.push(`Output: ${truncate(output, 3000)}`);
+      const error = part.state?.error;
+      if (error) {
+        lines.push(
+          `Error: ${typeof error === "object" && typeof error.message === "string" ? error.message : stringifyUnknown(error)}`,
+        );
       }
-      if (part.state?.error) lines.push(`Error: ${part.state.error}`);
       return lines.join("\n");
     }
     case "compaction":
@@ -1333,6 +1355,9 @@ function buildTranscriptV2(
     }
   }
 
+  const parts = loadSessionParts(db, sessionId);
+  let assistantMessages = 0;
+  let readableAssistantMessages = 0;
   for (const msg of getSessionMessages(db, sessionId)) {
     let data: Record<string, any>;
     try {
@@ -1340,8 +1365,23 @@ function buildTranscriptV2(
     } catch {
       continue;
     }
+    if (msg.id) data = withPartContent(data, parts.get(msg.id));
     const formatted = formatV2Message(msg.type, data);
+    if (msg.type === "assistant") {
+      assistantMessages++;
+      if (formatted) readableAssistantMessages++;
+    }
     if (formatted) sections.push(formatted);
+  }
+  // A storage change once hid every assistant block without an error; say
+  // so instead of letting the advisor treat a thin transcript as complete.
+  if (assistantMessages > 0 && readableAssistantMessages === 0) {
+    console.log(
+      `[advisor] session=${sessionId}: none of ${assistantMessages} assistant messages had readable content`,
+    );
+    sections.push(
+      `[Transcript incomplete: none of this session's ${assistantMessages} assistant messages could be read. Do not assume the agent did nothing.]`,
+    );
   }
 
   return sections.join("\n\n");

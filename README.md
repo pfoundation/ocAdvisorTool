@@ -460,7 +460,12 @@ The equivalent environment variable is
   `src/ocAdvisor.ts` holds the plugin implementation: it registers the
   `advisor` tool, injects a short selective-use instruction into eligible
   sessions via the `context` hook, and builds the transcript from the OpenCode
-  SQLite database. `src/typesafeGate.ts` and `src/typesafeState.ts` hold the
+  SQLite database. OpenCode 2.4+ stores assistant blocks in `session_part`
+  and leaves the message's inline content empty; `src/sessionParts.ts`
+  supplies those blocks to every reader (transcript, prior-call count, gate
+  state, requester detection, history, and the usage report). A transcript
+  whose assistant messages are all unreadable carries an explicit
+  "Transcript incomplete" note. `src/typesafeGate.ts` and `src/typesafeState.ts` hold the
   optional TypeSafe preflight. `src/benchmarkTypes.ts`, `src/artificialAnalysis.ts`,
   `src/benchmarkUpdate.ts`, `src/benchmarkStore.ts`, `src/benchmarkMatch.ts`,
   and `src/benchmarkEvidence.ts` hold the local Artificial Analysis snapshot,

@@ -26,6 +26,7 @@ import {
   sessionsWithAdvice,
 } from "./advisorHistory.js";
 import { isFableModel, normalizeModelID } from "./modelProfiles.js";
+import { loadToolNamesInWindow, withPartContent } from "./sessionParts.js";
 
 const DB_PATH = join(homedir(), ".local/share/opencode/opencode.db");
 const METRICS_PATH = join(
@@ -196,14 +197,15 @@ function queryEligibility(
   }
   const stats = new Map<string, { nonAdvisorTools: number; writes: boolean }>();
   const rows = db
-    .query<{ session_id: string; data: string }, [number, number]>(
-      "SELECT session_id, data FROM session_message WHERE type = 'assistant' AND time_created >= ? AND time_created < ?",
+    .query<{ id: string; session_id: string; data: string }, [number, number]>(
+      "SELECT id, session_id, data FROM session_message WHERE type = 'assistant' AND time_created >= ? AND time_created < ?",
     )
     .all(startMs, endMs);
+  const toolParts = loadToolNamesInWindow(db, startMs, endMs);
   for (const row of rows) {
     let data: Record<string, any>;
     try {
-      data = JSON.parse(row.data);
+      data = withPartContent(JSON.parse(row.data), toolParts.get(row.id));
     } catch {
       continue;
     }
