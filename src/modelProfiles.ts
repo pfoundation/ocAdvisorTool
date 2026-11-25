@@ -7,6 +7,7 @@
 // for this consultation: a pinned caller effort, gate-selectable candidates
 // with their fallback, or a fixed default.
 import type { Database } from "bun:sqlite";
+import { loadMessageParts, withPartContent } from "./sessionParts.js";
 
 export type RequesterProvenance =
   "invocation_message" | "latest_message" | "session_fallback" | "unknown";
@@ -136,8 +137,14 @@ function messageModel(
       )
       .get(messageID, sessionId);
     if (!row) return null;
-    const data = parseMessageData(row.data);
-    if (!data) return null;
+    const parsed = parseMessageData(row.data);
+    if (!parsed) return null;
+    const data = callID
+      ? withPartContent(
+          parsed,
+          loadMessageParts(db, messageID, { toolsOnly: true }),
+        )
+      : parsed;
     if (callID && !callMatchesMessage(data, callID)) return null;
     return parseModelShape(data.model);
   } catch {

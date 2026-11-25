@@ -10,6 +10,7 @@ import type {
   EvidenceBenchmarks,
   EvidenceModels,
 } from "./benchmarkEvidence.js";
+import { loadSessionParts, withPartContent } from "./sessionParts.js";
 
 export interface TypeSafeSettings {
   model?: string;
@@ -178,6 +179,7 @@ interface SessionRow {
 }
 
 interface SessionMessageRow {
+  id?: string;
   type: string;
   data: string;
 }
@@ -330,15 +332,20 @@ function readChainMessages(
     try {
       rows = db
         .query<SessionMessageRow, [string]>(
-          "SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq ASC LIMIT 400",
+          "SELECT * FROM session_message WHERE session_id = ? ORDER BY seq ASC LIMIT 400",
         )
         .all(session.id);
     } catch {
       rows = [];
     }
+    const parts = rows.length > 0 ? loadSessionParts(db, session.id) : null;
     for (const row of rows) {
       try {
-        out.push({ type: row.type, data: JSON.parse(row.data) });
+        const data = JSON.parse(row.data);
+        out.push({
+          type: row.type,
+          data: row.id ? withPartContent(data, parts?.get(row.id)) : data,
+        });
       } catch {}
     }
   }

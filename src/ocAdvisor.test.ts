@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -412,37 +412,53 @@ describe("ensureAdvisorSession", () => {
 
   test("creates and pins the advisor session on first use", async () => {
     resetAdvisorSessionCache();
-    const calls: string[] = [];
-    const runtime: V2PluginContext = {
-      session: {
-        get: async () => {
-          calls.push("get");
-          throw new Error("not found");
+    const root = mkdtempSync(join(tmpdir(), "ocadvisor-session-"));
+    const sessionDirectory = join(root, "advisor-session");
+    try {
+      const calls: string[] = [];
+      const runtime: V2PluginContext = {
+        session: {
+          get: async () => {
+            calls.push("get");
+            throw new Error("not found");
+          },
+          list: async () => {
+            calls.push("list");
+            return { data: [] };
+          },
+          create: async (input: unknown) => {
+            calls.push(`create:${JSON.stringify(input)}`);
+            return { data: { id: "ses_created1" } };
+          },
+          switchModel: async (input: unknown) => {
+            calls.push(`switch:${JSON.stringify(input)}`);
+          },
         },
-        list: async () => {
-          calls.push("list");
-          return { data: [] };
+        storage: {
+          get: async () => null,
+          set: async () => {},
         },
-        create: async (input: unknown) => {
-          calls.push(`create:${JSON.stringify(input)}`);
-          return { data: { id: "ses_created1" } };
-        },
-        switchModel: async (input: unknown) => {
-          calls.push(`switch:${JSON.stringify(input)}`);
-        },
-      },
-      storage: {
-        get: async () => null,
-        set: async () => {},
-      },
-    };
-    await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
-      "ses_created1",
-    );
-    expect(calls).toContain('create:{"title":"advisor"}');
-    expect(calls).toContain(
-      'switch:{"sessionID":"ses_created1","model":{"providerID":"anthropic","id":"claude-fable-5-2","variant":"max"}}',
-    );
+        __advisorTest: { sessionDirectory },
+      };
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_created1",
+      );
+      // Created in the plugin-owned directory, never the caller's location,
+      // with every tool denied.
+      expect(calls).toContain(
+        `create:${JSON.stringify({
+          title: "advisor",
+          location: { directory: sessionDirectory },
+          permissions: [{ action: "*", resource: "*", effect: "deny" }],
+        })}`,
+      );
+      expect(statSync(sessionDirectory).isDirectory()).toBe(true);
+      expect(calls).toContain(
+        'switch:{"sessionID":"ses_created1","model":{"providerID":"anthropic","id":"claude-fable-5-2","variant":"max"}}',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("reuses the cached session without recreating it", async () => {
@@ -593,6 +609,390 @@ describe("ensureAdvisorSession", () => {
     ]);
     resetAdvisorSessionCache();
   });
+
+  describe("session location", () => {
+    let root: string;
+    let sessionDirectory: string;
+    let removedDirectory: string;
+
+    beforeEach(() => {
+      resetAdvisorSessionCache();
+      root = mkdtempSync(join(tmpdir(), "ocadvisor-location-"));
+      sessionDirectory = join(root, "advisor-session");
+      // A worktree the session was created in and that was later removed.
+      removedDirectory = join(root, "removed-worktree");
+    });
+
+    afterEach(() => {
+      resetAdvisorSessionCache();
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    const pinned = {
+      ...advisorSession,
+      model: {
+        providerID: "anthropic",
+        id: "claude-fable-5-2",
+        variant: "max",
+      },
+    };
+
+    test("moves a reused session out of a removed directory", async () => {
+      const calls: string[] = [];
+      let location = { directory: removedDirectory };
+      const runtime: V2PluginContext = {
+        session: {
+          get: async () => ({ data: { ...pinned, location } }),
+          move: async (input: { sessionID: string; directory: string }) => {
+            calls.push(`move:${JSON.stringify(input)}`);
+            location = { directory: input.directory };
+          },
+          create: async () => {
+            calls.push("create");
+            return { data: { id: "ses_other" } };
+          },
+          switchModel: async () => {
+            calls.push("switch");
+          },
+        },
+        storage: { get: async () => "ses_advisor1", set: async () => {} },
+        __advisorTest: { sessionDirectory },
+      };
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_advisor1",
+      );
+      expect(calls).toEqual([
+        `move:${JSON.stringify({ sessionID: "ses_advisor1", directory: sessionDirectory })}`,
+      ]);
+      expect(statSync(sessionDirectory).isDirectory()).toBe(true);
+
+      // Once moved, later calls reuse it without moving again.
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_advisor1",
+      );
+      expect(calls).toHaveLength(1);
+    });
+
+    test("keeps a reused session already in the plugin-owned directory", async () => {
+      const calls: string[] = [];
+      const runtime: V2PluginContext = {
+        session: {
+          get: async () => ({
+            data: { ...pinned, location: { directory: sessionDirectory } },
+          }),
+          move: async () => {
+            calls.push("move");
+          },
+          create: async () => {
+            calls.push("create");
+            return { data: { id: "ses_other" } };
+          },
+          switchModel: async () => {
+            calls.push("switch");
+          },
+        },
+        storage: { get: async () => "ses_advisor1", set: async () => {} },
+        __advisorTest: { sessionDirectory },
+      };
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_advisor1",
+      );
+      expect(calls).toEqual([]);
+    });
+
+    test("replaces a session that lives in another project without moving it", async () => {
+      // Moving a session whose directory still exists queues the move and
+      // wakes that session, so a fresh one is created instead.
+      mkdirSync(join(root, "live-project"));
+      const calls: string[] = [];
+      const runtime: V2PluginContext = {
+        session: {
+          get: async () => ({
+            data: {
+              ...pinned,
+              location: { directory: join(root, "live-project") },
+            },
+          }),
+          move: async () => {
+            calls.push("move");
+          },
+          create: async () => {
+            calls.push("create");
+            return { data: { id: "ses_fresh0" } };
+          },
+          switchModel: async () => {
+            calls.push("switch");
+          },
+        },
+        storage: { get: async () => "ses_advisor1", set: async () => {} },
+        __advisorTest: { sessionDirectory },
+      };
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_fresh0",
+      );
+      expect(calls).toEqual(["create", "switch"]);
+    });
+
+    test("denies tools on a reused session that still allows them", async () => {
+      const calls: string[] = [];
+      let permissions: unknown[] = [];
+      const runtime: V2PluginContext = {
+        session: {
+          get: async () => ({
+            data: {
+              ...pinned,
+              location: { directory: sessionDirectory },
+              permissions,
+            },
+          }),
+          update: async (input: { permissions: unknown[] }) => {
+            calls.push(`update:${JSON.stringify(input)}`);
+            permissions = input.permissions;
+          },
+          switchModel: async () => {
+            calls.push("switch");
+          },
+        },
+        storage: { get: async () => "ses_advisor1", set: async () => {} },
+        __advisorTest: { sessionDirectory },
+      };
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_advisor1",
+      );
+      expect(calls).toEqual([
+        `update:${JSON.stringify({
+          sessionID: "ses_advisor1",
+          permissions: [{ action: "*", resource: "*", effect: "deny" }],
+        })}`,
+      ]);
+      // Once the session reports the ruleset, later calls leave it alone.
+      await ensureAdvisorSession(runtime, "max");
+      expect(calls).toHaveLength(1);
+    });
+
+    test("denies tools once when the payload never reports permissions", async () => {
+      const calls: string[] = [];
+      const runtime: V2PluginContext = {
+        session: {
+          get: async () => ({
+            data: { ...pinned, location: { directory: sessionDirectory } },
+          }),
+          update: async () => {
+            calls.push("update");
+          },
+          switchModel: async () => {},
+        },
+        storage: { get: async () => "ses_advisor1", set: async () => {} },
+        __advisorTest: { sessionDirectory },
+      };
+      await ensureAdvisorSession(runtime, "max");
+      await ensureAdvisorSession(runtime, "max");
+      expect(calls).toEqual(["update"]);
+    });
+
+    test("title discovery never moves or locks down a session it does not own", async () => {
+      // Found only by title, outside the plugin directory: it may be a
+      // user's own session named "advisor".
+      const calls: string[] = [];
+      const runtime: V2PluginContext = {
+        session: {
+          get: async () => {
+            throw new Error("not found");
+          },
+          list: async () => ({
+            data: [
+              {
+                ...pinned,
+                id: "ses_someone",
+                location: { directory: removedDirectory },
+              },
+            ],
+          }),
+          move: async () => {
+            calls.push("move");
+          },
+          update: async (input: { sessionID: string }) => {
+            calls.push(`update:${input.sessionID}`);
+          },
+          create: async () => {
+            calls.push("create");
+            return { data: { id: "ses_fresh4" } };
+          },
+          switchModel: async () => {
+            calls.push("switch");
+          },
+        },
+        storage: { get: async () => null, set: async () => {} },
+        __advisorTest: { sessionDirectory },
+      };
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_fresh4",
+      );
+      expect(calls).toEqual(["create", "switch"]);
+    });
+
+    test("a failed permission update does not block the consultation", async () => {
+      const runtime: V2PluginContext = {
+        session: {
+          get: async () => ({
+            data: { ...pinned, location: { directory: sessionDirectory } },
+          }),
+          update: async () => {
+            throw new Error("update rejected");
+          },
+          switchModel: async () => {},
+        },
+        storage: { get: async () => "ses_advisor1", set: async () => {} },
+        __advisorTest: { sessionDirectory },
+      };
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_advisor1",
+      );
+    });
+
+    test("replaces a stale session it cannot move", async () => {
+      const calls: string[] = [];
+      const stored: string[] = [];
+      const runtime: V2PluginContext = {
+        session: {
+          get: async (input: { sessionID: string }) =>
+            input.sessionID === "ses_advisor1"
+              ? {
+                  data: {
+                    ...pinned,
+                    location: { directory: removedDirectory },
+                  },
+                }
+              : { data: { ...pinned, id: input.sessionID } },
+          list: async () => ({
+            data: [{ ...pinned, location: { directory: removedDirectory } }],
+          }),
+          move: async () => {
+            calls.push("move");
+            throw new Error(`Directory does not exist: ${removedDirectory}`);
+          },
+          create: async (input: unknown) => {
+            calls.push(`create:${JSON.stringify(input)}`);
+            return { data: { id: "ses_fresh1" } };
+          },
+          switchModel: async () => {
+            calls.push("switch");
+          },
+        },
+        storage: {
+          get: async () => "ses_advisor1",
+          set: async (_key: string, value: string) => {
+            stored.push(value);
+          },
+        },
+        __advisorTest: { sessionDirectory },
+      };
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_fresh1",
+      );
+      // One move attempt: the list entry is the same session and is skipped.
+      expect(calls).toEqual([
+        "move",
+        `create:${JSON.stringify({
+          title: "advisor",
+          location: { directory: sessionDirectory },
+          permissions: [{ action: "*", resource: "*", effect: "deny" }],
+        })}`,
+        "switch",
+      ]);
+      expect(stored).toEqual(["ses_fresh1"]);
+    });
+
+    test("replaces a stale session when the runtime cannot move sessions", async () => {
+      const calls: string[] = [];
+      const runtime: V2PluginContext = {
+        session: {
+          get: async () => ({
+            data: { ...pinned, location: { directory: removedDirectory } },
+          }),
+          create: async () => {
+            calls.push("create");
+            return { data: { id: "ses_fresh2" } };
+          },
+          switchModel: async () => {
+            calls.push("switch");
+          },
+        },
+        storage: { get: async () => "ses_advisor1", set: async () => {} },
+        __advisorTest: { sessionDirectory },
+      };
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_fresh2",
+      );
+      expect(calls).toEqual(["create", "switch"]);
+    });
+
+    test("does not trust a move that leaves the session in a missing directory", async () => {
+      const calls: string[] = [];
+      const runtime: V2PluginContext = {
+        session: {
+          // The move is queued, not applied: the location stays stale.
+          get: async () => ({
+            data: { ...pinned, location: { directory: removedDirectory } },
+          }),
+          move: async () => {
+            calls.push("move");
+          },
+          create: async () => {
+            calls.push("create");
+            return { data: { id: "ses_fresh3" } };
+          },
+          switchModel: async () => {
+            calls.push("switch");
+          },
+        },
+        storage: { get: async () => "ses_advisor1", set: async () => {} },
+        __advisorTest: { sessionDirectory },
+      };
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_fresh3",
+      );
+      expect(calls).toEqual(["move", "create", "switch"]);
+    });
+
+    test("discovery skips a stale titled session for a usable one", async () => {
+      const calls: string[] = [];
+      const runtime: V2PluginContext = {
+        session: {
+          get: async () => {
+            throw new Error("not found");
+          },
+          list: async () => ({
+            data: [
+              {
+                ...pinned,
+                id: "ses_stale",
+                location: { directory: removedDirectory },
+              },
+              {
+                ...pinned,
+                id: "ses_live",
+                location: { directory: sessionDirectory },
+              },
+            ],
+          }),
+          create: async () => {
+            calls.push("create");
+            return { data: { id: "ses_other" } };
+          },
+          switchModel: async () => {
+            calls.push("switch");
+          },
+        },
+        storage: { get: async () => null, set: async () => {} },
+        __advisorTest: { sessionDirectory },
+      };
+      await expect(ensureAdvisorSession(runtime, "max")).resolves.toBe(
+        "ses_live",
+      );
+      expect(calls).toEqual([]);
+    });
+  });
 });
 
 describe("checkpoint guidance", () => {
@@ -738,6 +1138,7 @@ describe("tool registration", () => {
         __advisorTest: {
           dbPath,
           metricsPath: join(dir, "metrics.jsonl"),
+          sessionDirectory: join(dir, "advisor-session"),
           gateClient: {
             systemOne: async () => ({
               kind: "response",
@@ -1684,24 +2085,30 @@ describe("model helpers honor a custom config", () => {
 
   test("ensureAdvisorSession pins the configured model and variant", async () => {
     resetAdvisorSessionCache();
-    const calls: string[] = [];
-    const runtime: V2PluginContext = {
-      session: {
-        get: async () => {
-          throw new Error("not found");
+    const root = mkdtempSync(join(tmpdir(), "ocadvisor-opus-"));
+    try {
+      const calls: string[] = [];
+      const runtime: V2PluginContext = {
+        session: {
+          get: async () => {
+            throw new Error("not found");
+          },
+          list: async () => ({ data: [] }),
+          create: async () => ({ data: { id: "ses_opus1" } }),
+          switchModel: async (input: unknown) => {
+            calls.push(JSON.stringify(input));
+          },
         },
-        list: async () => ({ data: [] }),
-        create: async () => ({ data: { id: "ses_opus1" } }),
-        switchModel: async (input: unknown) => {
-          calls.push(JSON.stringify(input));
-        },
-      },
-      storage: { get: async () => null, set: async () => {} },
-    };
-    await ensureAdvisorSession(runtime, "high", opusConfig);
-    expect(calls).toContain(
-      '{"sessionID":"ses_opus1","model":{"providerID":"anthropic","id":"claude-opus-5","variant":"high"}}',
-    );
-    resetAdvisorSessionCache();
+        storage: { get: async () => null, set: async () => {} },
+        __advisorTest: { sessionDirectory: join(root, "advisor-session") },
+      };
+      await ensureAdvisorSession(runtime, "high", opusConfig);
+      expect(calls).toContain(
+        '{"sessionID":"ses_opus1","model":{"providerID":"anthropic","id":"claude-opus-5","variant":"high"}}',
+      );
+    } finally {
+      resetAdvisorSessionCache();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
