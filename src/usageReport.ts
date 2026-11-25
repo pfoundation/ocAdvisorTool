@@ -11,7 +11,8 @@
  * Run: bun src/usageReport.ts [--days N] [--advisor-model ID]
  *
  * The eligibility proxy excludes the advisor model itself (it cannot consult
- * itself); --advisor-model overrides which id that is. A window spanning an
+ * itself) and every Claude Fable model (blocked from the advisor);
+ * --advisor-model overrides which advisor id that is. A window spanning an
  * advisor-model change counts pre-switch advisor sessions as eligible, which
  * slightly understates coverage for those days.
  */
@@ -24,7 +25,7 @@ import {
   queryAdvisorHistory,
   sessionsWithAdvice,
 } from "./advisorHistory.js";
-import { normalizeModelID } from "./modelProfiles.js";
+import { isFableModel, normalizeModelID } from "./modelProfiles.js";
 
 const DB_PATH = join(homedir(), ".local/share/opencode/opencode.db");
 const METRICS_PATH = join(
@@ -75,7 +76,7 @@ function parseArgs(): { days: number; advisorModel: string } {
   let days = 30;
   // Must match ADVISOR_MODEL in src/ocAdvisor.ts until the report learns to
   // read the plugin config.
-  let advisorModel = "claude-opus-5-5";
+  let advisorModel = "claude-fable-5-2";
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--days" && args[i + 1]) {
       const parsed = Number(args[i + 1]);
@@ -208,8 +209,10 @@ function queryEligibility(
     }
     const model = data.model || {};
     const id = String(model.id || model.modelID || "");
-    // Advisor-model sessions cannot consult the advisor; they are ineligible.
+    // Advisor-model and Fable sessions cannot consult the advisor; they are
+    // ineligible.
     if (id && normalizeModelID(id) === normalizeModelID(advisorModel)) continue;
+    if (id && isFableModel(id)) continue;
     let entry = stats.get(row.session_id);
     if (!entry) {
       entry = { nonAdvisorTools: 0, writes: false };

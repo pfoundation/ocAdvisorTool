@@ -11,7 +11,14 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { normalizeAAResponse } from "../src/artificialAnalysis.js";
+import {
+  AA_MAX_PAGES,
+  aaModelsPageURL,
+  combineAAPages,
+  normalizeAAResponse,
+  parseAAPage,
+  type AAPage,
+} from "../src/artificialAnalysis.js";
 import type { BenchmarkSnapshot } from "../src/benchmarkTypes.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -23,13 +30,66 @@ interface BindingSpec {
   modelID: string;
   variant: string | null;
   slug: string;
+  // Stable Artificial Analysis record for a model newer than the bundled
+  // snapshot, taken from its public model page. Used only while the slug is
+  // missing from the snapshot (the binding then resolves after the next
+  // refresh); once present, the snapshot id must equal it.
+  pinned?: { aaModelID: string; name: string };
+}
+
+// Claude Fable 5.2 (the default advisor) was published after the bundled
+// snapshot. IDs and names from https://artificialanalysis.ai/models/claude-fable-5-2.
+const FABLE_5_2_RECORDS: Record<string, { aaModelID: string; name: string }> = {
+  "claude-fable-5-2": {
+    aaModelID: "593f2d23-247b-41c9-a679-cebd225f0a9a",
+    name: "Claude Fable 5.2 (Max, Default Fallback)",
+  },
+  "claude-fable-5-2-xhigh": {
+    aaModelID: "76942526-cc96-46b0-bc27-29561c53ed70",
+    name: "Claude Fable 5.2 (Xhigh, Default Fallback)",
+  },
+  "claude-fable-5-2-high": {
+    aaModelID: "fdc1913b-9497-45ef-83f7-17dae756f37e",
+    name: "Claude Fable 5.2 (High, Default Fallback)",
+  },
+  "claude-fable-5-2-medium": {
+    aaModelID: "0c9b4e05-9259-42cc-b40e-d6acbbeaa7e8",
+    name: "Claude Fable 5.2 (Medium, Default Fallback)",
+  },
+  "claude-fable-5-2-low": {
+    aaModelID: "cfc7acb1-d903-4858-9b6c-6c7776caf8f9",
+    name: "Claude Fable 5.2 (Low, Default Fallback)",
+  },
+};
+
+// Advisor model bindings for every effort, direct and via the opencode
+// gateway fallback route. The unset variant follows the max entry.
+function fable52Bindings(): BindingSpec[] {
+  const efforts: Array<[string | null, string]> = [
+    ["max", "claude-fable-5-2"],
+    ["xhigh", "claude-fable-5-2-xhigh"],
+    ["high", "claude-fable-5-2-high"],
+    ["medium", "claude-fable-5-2-medium"],
+    ["low", "claude-fable-5-2-low"],
+    [null, "claude-fable-5-2"],
+  ];
+  return ["anthropic", "opencode"].flatMap((providerID) =>
+    efforts.map(([variant, slug]) => ({
+      providerID,
+      modelID: "claude-fable-5-2",
+      variant,
+      slug,
+      pinned: FABLE_5_2_RECORDS[slug],
+    })),
+  );
 }
 
 // Curated baseline bindings. Slugs come from the Artificial Analysis
 // models endpoint; a per-effort slug (for example `-xhigh`) is used
 // whenever the source publishes one, so evaluated effort stays honest.
 const BINDINGS: BindingSpec[] = [
-  // Anthropic advisor family.
+  ...fable52Bindings(),
+  // Anthropic family.
   {
     providerID: "anthropic",
     modelID: "claude-fable-5-1",
@@ -96,8 +156,7 @@ const BINDINGS: BindingSpec[] = [
     variant: null,
     slug: "claude-opus-4-8",
   },
-  // Anthropic advisor model (Opus 5.5), direct and via the opencode
-  // gateway fallback route.
+  // Opus 5.5 (the previous advisor), direct and via the opencode gateway.
   {
     providerID: "anthropic",
     modelID: "claude-opus-5-5",
@@ -471,19 +530,37 @@ async function refreshSnapshot(): Promise<void> {
     log("ARTIFICIAL_ANALYSIS_API_KEY is required for --refresh-snapshot");
     process.exit(2);
   }
-  const response = await fetch(
-    "https://artificialanalysis.ai/api/v2/data/llms/models",
-    {
+  const signal = AbortSignal.timeout(60_000);
+  const pages: AAPage[] = [];
+  for (let page = 1; ; page++) {
+    if (page > AA_MAX_PAGES) {
+      log(`Artificial Analysis reported more than ${AA_MAX_PAGES} pages`);
+      process.exit(1);
+    }
+    const response = await fetch(aaModelsPageURL(page), {
       headers: { "x-api-key": key },
-      signal: AbortSignal.timeout(30_000),
+      signal,
       redirect: "error",
-    },
-  );
-  if (!response.ok) {
-    log(`Artificial Analysis request failed with HTTP ${response.status}`);
+    });
+    if (!response.ok) {
+      log(
+        `Artificial Analysis request for page ${page} failed with HTTP ${response.status}`,
+      );
+      process.exit(1);
+    }
+    const parsed = parseAAPage(await response.json(), page);
+    if ("error" in parsed) {
+      log(`Artificial Analysis response rejected: ${parsed.error}`);
+      process.exit(1);
+    }
+    pages.push(parsed);
+    if (!parsed.hasMore) break;
+  }
+  const body = combineAAPages(pages);
+  if ("error" in body) {
+    log(`Artificial Analysis response rejected: ${body.error}`);
     process.exit(1);
   }
-  const body: unknown = await response.json();
   const snapshot = normalizeAAResponse(body, new Date().toISOString());
   if ("error" in snapshot) {
     log(`Artificial Analysis response rejected: ${snapshot.error}`);
@@ -502,25 +579,43 @@ function buildMappings(snapshot: BenchmarkSnapshot): void {
   const bySlug = new Map(snapshot.models.map((model) => [model.slug, model]));
   const bindings: Array<Record<string, unknown>> = [];
   const missing: string[] = [];
+  const pending = new Set<string>();
   for (const spec of BINDINGS) {
     const model = bySlug.get(spec.slug);
-    if (!model) {
+    if (model && spec.pinned && model.id !== spec.pinned.aaModelID) {
+      log(
+        `pinned id for ${spec.slug} (${spec.pinned.aaModelID}) differs from the snapshot (${model.id})`,
+      );
+      process.exit(1);
+    }
+    const record = model
+      ? { id: model.id, name: model.name }
+      : spec.pinned
+        ? { id: spec.pinned.aaModelID, name: spec.pinned.name }
+        : null;
+    if (!record) {
       missing.push(spec.slug);
       continue;
     }
+    if (!model) pending.add(spec.slug);
     bindings.push({
       providerID: spec.providerID,
       modelID: spec.modelID,
       variant: spec.variant,
-      aaModelID: model.id,
-      evaluatedEffort: evaluatedEffortFromName(model.name),
-      evidenceURL: `https://artificialanalysis.ai/models/${model.slug}`,
+      aaModelID: record.id,
+      evaluatedEffort: evaluatedEffortFromName(record.name),
+      evidenceURL: `https://artificialanalysis.ai/models/${spec.slug}`,
     });
   }
   if (missing.length > 0) {
     log(`mapping slugs missing from the snapshot: ${missing.join(", ")}`);
     log("refresh the snapshot or drop the stale binding specs, then retry");
     process.exit(1);
+  }
+  if (pending.size > 0) {
+    log(
+      `pinned bindings awaiting a snapshot refresh: ${[...pending].join(", ")}`,
+    );
   }
   const mappings = { schemaVersion: 1, bindings };
   writeFileSync(

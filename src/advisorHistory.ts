@@ -11,8 +11,10 @@
 //   produced advice (for example the caller was interrupted while the plugin
 //   generated), so the two views stay separate instead of being summed.
 //
-// `skipped_fable` is legacy: the self-consultation guard used to be keyed to
-// Fable and emitted that notice. Current rows use `skipped_self`.
+// `skipped_fable` covers the built-in Fable-family block
+// ("advisor is disabled (Fable): ...") and the older notice from when the
+// self-consultation guard was keyed to Fable. Self-consultation rows use
+// `skipped_self`.
 import { Database } from "bun:sqlite";
 
 export type AdvisorGeneration =

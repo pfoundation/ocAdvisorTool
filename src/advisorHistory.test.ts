@@ -177,6 +177,26 @@ describe("queryAdvisorHistory", () => {
     expect(sessionsWithAdvice(history.calls).size).toBe(0);
   });
 
+  test("classifies the built-in Fable notice as skipped_fable", () => {
+    const db = openFixtureDb();
+    addAssistant(db, "msg_1", "ses_a", START + 1000, [
+      toolBlock("call_1", {
+        status: "completed",
+        input: { mode: "general" },
+        content: [
+          {
+            type: "text",
+            text: "advisor is disabled (Fable): anthropic/claude-fable-5-1 cannot consult the advisor.",
+          },
+        ],
+        time: { ran: START + 1000 },
+      }),
+    ]);
+    const history = queryAdvisorHistory(db, START, END);
+    expect(countGenerations(history.calls)).toEqual({ skipped_fable: 1 });
+    expect(sessionsWithAdvice(history.calls).size).toBe(0);
+  });
+
   test("classifies model opt-out notices separately from Fable skips", () => {
     const notice =
       "advisor is disabled (model opt-out): openai/gpt-6-astra is listed in disabledForModels.";

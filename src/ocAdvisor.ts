@@ -17,6 +17,7 @@ import {
   type BenchmarkView,
 } from "./benchmarkStore.js";
 import {
+  isFableModel,
   normalizeModelID,
   resolveAdvisorProfile,
   resolveRequesterProfile,
@@ -46,7 +47,7 @@ const METRICS_PATH = join(
   ".local/share/opencode/ocAdvisor-metrics.jsonl",
 );
 const ADVISOR_PROVIDER = "anthropic";
-const ADVISOR_MODEL = "claude-opus-5-5";
+const ADVISOR_MODEL = "claude-fable-5-2";
 const ADVISOR_VARIANT = "xhigh";
 // Gateway provider used when the configured Anthropic advisor is
 // unavailable (see callAdvisor). Same model, different route.
@@ -65,15 +66,17 @@ const AGENT_EFFORT_DEFAULTS = ["high", "xhigh", "max"];
 // classifier never depends on the model name.
 const SELF_CONSULT_PREFIX =
   "advisor is disabled: the current model is already the advisor model";
+// Prefix of the built-in Fable-family notice; history parsing matches it.
+const FABLE_DISABLED_PREFIX = "advisor is disabled (Fable):";
 
 // The advisor model is configurable via plugin options in opencode.json
-// (`{ "package": "...", "options": { "model": "anthropic/claude-opus-5-5#xhigh" } }`)
+// (`{ "package": "...", "options": { "model": "anthropic/claude-fable-5-2#xhigh" } }`)
 // or, for symlink/auto-discovered installs that cannot receive options,
 // via environment variables (OCADVISOR_MODEL, OCADVISOR_PROVIDER,
 // OCADVISOR_VARIANT, OCADVISOR_TIMEOUT_MS, OCADVISOR_MAX_TRANSCRIPT_CHARS,
 // OCADVISOR_AGENT_EFFORT, OCADVISOR_BENCHMARKS_PATH,
 // OCADVISOR_BENCHMARK_MAPPINGS_PATH, OCADVISOR_BENCHMARKS_MATCH_ANY_PROVIDER).
-// Defaults: anthropic/claude-opus-5-5#xhigh, with one opencode retry when the
+// Defaults: anthropic/claude-fable-5-2#xhigh, with one opencode retry when the
 // Anthropic route is unavailable.
 interface AdvisorConfig {
   provider: string;
@@ -407,7 +410,10 @@ You are a software architect. Evaluate the current approach and plan. Identify r
 You are a debugger. Analyze error patterns, stack traces, and failed attempts in the transcript. Identify root causes, explain why previous fixes didn't work, and propose targeted solutions.`,
 };
 
-const TOOL_DESCRIPTION = `Consult a senior advisor model with your full session transcript — including parent sessions for subagents — for high-quality analysis.
+// The first line names the configured advisor so the calling agent knows
+// which model it is consulting.
+function baseToolDescription(config: AdvisorConfig): string {
+  return `Consult a senior advisor model (${config.provider}/${config.model}) with your full session transcript — including parent sessions for subagents — for high-quality analysis.
 
 Use advisor when an independent perspective could improve the approach, help resolve a problem, or strengthen an implementation review.
 
@@ -423,17 +429,21 @@ Rules:
 
 Args: "mode" (general, review, plan, debug), "trigger" (before_approach, stuck, pre_complete, followup, other), "question" (concrete question focusing the advisor).
 `;
+}
+
+const TOOL_DESCRIPTION = baseToolDescription(DEFAULT_ADVISOR_CONFIG);
 
 // When `agentEffort` is enabled the tool advertises an optional `effort`
-// argument; otherwise the description is exactly TOOL_DESCRIPTION.
+// argument; otherwise the description is exactly the base description.
 function buildToolDescription(
   config: AdvisorConfig = DEFAULT_ADVISOR_CONFIG,
 ): string {
+  const base = baseToolDescription(config);
   if (!config.agentEffort || config.agentEffort.length === 0) {
-    return TOOL_DESCRIPTION;
+    return base;
   }
   return (
-    TOOL_DESCRIPTION +
+    base +
     `Optional "effort" (one of: ${config.agentEffort.join(", ")}): reasoning effort for this consultation; omit to use the configured variant.\n`
   );
 }
@@ -452,6 +462,7 @@ type AdvisorTrigger = (typeof ADVISOR_TRIGGERS)[number];
 type AdvisorOutcome =
   | "advisor_response"
   | "skipped_self"
+  | "skipped_fable"
   | "skipped_model"
   | "skipped_typesafe"
   | "error"
@@ -691,7 +702,7 @@ function isAdvisorModel(
 }
 
 type AdvisorDisabledReason = {
-  outcome: "skipped_self" | "skipped_model";
+  outcome: "skipped_self" | "skipped_fable" | "skipped_model";
   message: string;
 };
 
@@ -716,6 +727,15 @@ function advisorDisabledReason(
   }
   const provider = model?.providerID || model?.provider;
   const id = model?.id || model?.modelID;
+  // Built in and independent of the configured advisor: Fable callers on
+  // any route, version, or effort never see or invoke the advisor.
+  if (id && isFableModel(String(id))) {
+    const ref = provider ? `${provider}/${id}` : String(id);
+    return {
+      outcome: "skipped_fable",
+      message: `${FABLE_DISABLED_PREFIX} ${ref} cannot consult the advisor.`,
+    };
+  }
   if (!provider || !id) return null;
   const ref = `${provider}/${id}`;
   if (!config.disabledForModels.includes(ref)) return null;
@@ -2511,7 +2531,7 @@ export async function setupOcAdvisorV2(
         if (!event.tools) return;
         // `event.tools` lists the direct tools available to this request.
         // OpenCode drops entries a hook adds for tools it did not register,
-        // so the hook can only hide the tool (advisor-model or opted-out sessions),
+        // so the hook can only hide the tool (advisor-model, Fable, or opted-out sessions),
         // never add it. The checkpoint instruction is injected only when
         // the tool is actually available, e.g. not when a permission rule
         // removed it.
