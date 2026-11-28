@@ -75,8 +75,7 @@ describe("gate evaluation fixtures", () => {
     expect(state.models?.requester.modelID).toBe("claude-opus-5-5");
     expect(state.benchmarks?.source).toBe("seed");
     expect(state.benchmarks?.requesterMatch.status).toBe("matched");
-    // Bound to the published record but awaiting a snapshot refresh.
-    expect(state.benchmarks?.advisorDefaultMatch.status).toBe("missing_record");
+    expect(state.benchmarks?.advisorDefaultMatch.status).toBe("matched");
     expect(state.benchmarks?.advisorDefaultMatch.aaModelID).toBe(
       "76942526-cc96-46b0-bc27-29561c53ed70",
     );

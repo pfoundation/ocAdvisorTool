@@ -6,16 +6,10 @@ import { parseBenchmarkSnapshot, verifySnapshotHash } from "./benchmarkTypes";
 
 const DATA_DIR = join(import.meta.dir, "data");
 
-// Claude Fable 5.2 records pinned in scripts/buildBenchmarkData.ts: published
-// after the bundled snapshot, so their bindings resolve only after a refresh.
+// Records pinned in scripts/buildBenchmarkData.ts that were published after
+// the bundled snapshot, so their bindings resolve only after a refresh.
 // Drop entries here once a refreshed snapshot contains them.
-const PENDING_RECORDS = new Set([
-  "593f2d23-247b-41c9-a679-cebd225f0a9a",
-  "76942526-cc96-46b0-bc27-29561c53ed70",
-  "fdc1913b-9497-45ef-83f7-17dae756f37e",
-  "0c9b4e05-9259-42cc-b40e-d6acbbeaa7e8",
-  "cfc7acb1-d903-4858-9b6c-6c7776caf8f9",
-]);
+const PENDING_RECORDS = new Set<string>([]);
 
 describe("bundled benchmark seed", () => {
   test("ships a valid snapshot with a verified content hash", () => {
@@ -81,10 +75,5 @@ describe("bundled benchmark seed", () => {
       }
     }
     expect(failures).toEqual([]);
-    expect(
-      mappings.bindings.some((binding) =>
-        PENDING_RECORDS.has(binding.aaModelID),
-      ),
-    ).toBe(true);
   });
 });
